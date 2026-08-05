@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Papa from "papaparse";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer,
 } from "recharts";
 
 /* =========================================================================
@@ -23,7 +24,11 @@ import {
 
 const SHEET_ID = "1mPDFUo38I4r7KlKyBvEvl9VCLsaZgifHSMUKYEaa14A";
 const TABS_SOURCE = {
-  meta: "Query-Meta",
+  // OJO: la pestaña real se llama "Query-Meta " CON UN ESPACIO al final.
+  // Sin ese espacio, Google Sheets no encuentra coincidencia exacta y
+  // devuelve silenciosamente la PRIMERA pestaña del archivo (el resumen
+  // mensual) en vez de un error — así se perdía toda la inversión de Meta.
+  meta: "Query-Meta ",
   google: "Query-Google",
   zoho: "Base ZOHO OPS 2026",
 };
@@ -36,19 +41,40 @@ const NO_CONTACTADO_FASE = "identificación de sospechoso";
 const SEGUIMIENTO_FINAL_FASE = "seguimiento final";
 const PROGRAMA_ACEPTADO_FASE = "programa aceptado";
 
+// Paleta extraída directamente del manual de identidad AltamiranoAnaya.2024
+// (valores vectoriales exactos, no aproximados a ojo):
+//   Azul marino  #245193  — color primario del isotipo
+//   Azul vivo    #3B4BA7  — variante de aplicación del isotipo
+//   Rojo carmesí #D1193F  — color secundario (versión sello / franja roja)
+//   Gris carbón  #515254  — franja inferior del manual, usado aquí como texto
+// Tipografía: Source Sans Pro es la fuente real que Illustrator dejó
+// embebida en el PDF de marca (texto de apoyo del manual). Playfair
+// Display se usa solo en títulos como eco editorial del logotipo serif
+// de alto contraste — no se intenta clonar el logotipo, que está
+// vectorizado a mano.
 const COLORS = {
-  bg: "#0B1F3A",
-  bgCard: "#11284A",
-  bgCardAlt: "#152F55",
-  border: "#22406B",
-  gold: "#C9A84C",
-  teal: "#0891B2",
-  green: "#16A34A",
-  red: "#DC2626",
-  yellow: "#EAB308",
-  muted: "#64748B",
-  text: "#F1F5F9",
+  bg: "#F7F7F8",
+  bgCard: "#FFFFFF",
+  bgCardAlt: "#F1F2F5",
+  border: "#E2E4E9",
+  navy: "#245193",
+  navyDeep: "#1B3D70",
+  blue: "#3B4BA7",
+  crimson: "#D1193F",
+  green: "#1E8A4C",
+  red: "#D1193F",
+  yellow: "#C77D0A",
+  muted: "#6B6D72",
+  text: "#211D1D",
+  // alias para no romper referencias existentes a COLORS.gold/teal
+  gold: "#245193",
+  teal: "#3B4BA7",
 };
+
+const CHART_COLORS = [COLORS.navy, COLORS.crimson, COLORS.blue, COLORS.yellow, COLORS.green, "#8A8D93"];
+
+const FONT_DISPLAY = "'Playfair Display', Georgia, serif";
+const FONT_BODY = "'Source Sans Pro', 'Segoe UI', system-ui, sans-serif";
 
 const THRESHOLDS = {
   noContactado: { green: 50, yellow: 70 }, // < verde, <= amarillo, > rojo
@@ -148,6 +174,23 @@ async function fetchCsv(sheetName) {
     rows.push(obj);
   }
   return rows;
+}
+
+// Si el nombre de una pestaña no coincide EXACTO (mayúsculas, espacios,
+// etc.), Google Sheets no da error — regresa silenciosamente la PRIMERA
+// pestaña del archivo. Esta validación evita que eso pase inadvertido:
+// revisa que las columnas esperadas realmente existan en lo que llegó.
+function assertColumns(rows, requiredCols, sheetName) {
+  const cols = rows.length ? Object.keys(rows[0]) : [];
+  const missing = requiredCols.filter((c) => !cols.includes(c));
+  if (missing.length) {
+    throw new Error(
+      `La pestaña "${sheetName}" no trae las columnas esperadas (falta: ${missing.join(", ")}). ` +
+        `Esto casi siempre significa que el nombre de la pestaña cambió o tiene espacios/mayúsculas ` +
+        `distintas a lo configurado, y Google Sheets regresó otra pestaña por error. Columnas recibidas: ` +
+        `${cols.slice(0, 8).join(", ")}${cols.length > 8 ? "…" : ""}`
+    );
+  }
 }
 
 /* -------------------------------------------------------------------------
@@ -474,16 +517,17 @@ function KpiCard({ label, value, sub, color }) {
       style={{
         background: COLORS.bgCard,
         border: `1px solid ${COLORS.border}`,
-        borderRadius: 12,
+        borderRadius: 10,
         padding: "18px 20px",
         flex: "1 1 180px",
         minWidth: 160,
+        boxShadow: "0 1px 3px rgba(33,29,29,0.06)",
       }}
     >
-      <div style={{ fontSize: 12, color: COLORS.muted, textTransform: "uppercase", letterSpacing: 0.5 }}>
+      <div style={{ fontSize: 11, color: COLORS.muted, textTransform: "uppercase", letterSpacing: 0.6, fontWeight: 600 }}>
         {label}
       </div>
-      <div style={{ fontSize: 26, fontWeight: 700, color: color || COLORS.text, marginTop: 6 }}>
+      <div style={{ fontFamily: FONT_DISPLAY, fontSize: 30, fontWeight: 700, color: color || COLORS.navyDeep, marginTop: 6 }}>
         {value}
       </div>
       {sub && <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 4 }}>{sub}</div>}
@@ -514,12 +558,13 @@ function TabButton({ active, onClick, children }) {
       style={{
         padding: "10px 16px",
         borderRadius: 8,
-        border: `1px solid ${active ? COLORS.gold : COLORS.border}`,
-        background: active ? "rgba(201,168,76,0.12)" : "transparent",
-        color: active ? COLORS.gold : COLORS.text,
+        border: `1px solid ${active ? COLORS.navy : COLORS.border}`,
+        background: active ? "rgba(36,81,147,0.10)" : "#FFFFFF",
+        color: active ? COLORS.navyDeep : COLORS.text,
         fontWeight: active ? 700 : 500,
         cursor: "pointer",
         fontSize: 13,
+        fontFamily: FONT_BODY,
         whiteSpace: "nowrap",
       }}
     >
@@ -528,9 +573,136 @@ function TabButton({ active, onClick, children }) {
   );
 }
 
+function Card({ children, style }) {
+  return (
+    <div
+      style={{
+        background: COLORS.bgCard,
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: 10,
+        padding: 20,
+        boxShadow: "0 1px 3px rgba(33,29,29,0.06)",
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// Etiqueta pequeña estilo "eyebrow" para encabezar cada sección de una vista.
+function SectionLabel({ children }) {
+  return (
+    <div
+      style={{
+        color: COLORS.navy,
+        fontSize: 11,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: 0.8,
+        marginBottom: 10,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function ChartTooltip({ active, payload, label }) {
+  if (!active || !payload || !payload.length) return null;
+  return (
+    <div
+      style={{
+        background: "#FFFFFF",
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: 8,
+        padding: "8px 12px",
+        fontSize: 12,
+        boxShadow: "0 2px 8px rgba(33,29,29,0.12)",
+      }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.text }}>{label}</div>
+      {payload.map((p, i) => (
+        <div key={i} style={{ color: p.color }}>
+          {p.name}: <strong>{typeof p.value === "number" ? p.value.toLocaleString("es-MX") : p.value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Gráfica de barras genérica reutilizable en varias vistas.
+function SimpleBarChart({ data, bars, xKey = "label", height = 260, layout = "horizontal" }) {
+  return (
+    <div style={{ height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} layout={layout} margin={{ top: 10, right: 16, left: layout === "vertical" ? 40 : 0, bottom: 0 }}>
+          <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" horizontal={layout !== "vertical"} vertical={layout === "vertical"} />
+          {layout === "vertical" ? (
+            <>
+              <XAxis type="number" stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+              <YAxis type="category" dataKey={xKey} stroke={COLORS.muted} tick={{ fontSize: 11 }} width={140} />
+            </>
+          ) : (
+            <>
+              <XAxis dataKey={xKey} stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+              <YAxis stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+            </>
+          )}
+          <Tooltip content={<ChartTooltip />} />
+          {bars.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
+          {bars.map((b, i) => (
+            <Bar key={b.key} dataKey={b.key} name={b.name || b.key} fill={b.color || CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]} />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// Dona / pastel genérico.
+function SimpleDonut({ data, height = 240 }) {
+  const total = data.reduce((s, d) => s + d.value, 0);
+  return (
+    <div style={{ height, display: "flex", alignItems: "center", gap: 20 }}>
+      <div style={{ width: height, height }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie data={data} dataKey="value" nameKey="name" innerRadius="55%" outerRadius="85%" paddingAngle={2}>
+              {data.map((d, i) => (
+                <Cell key={i} fill={d.color || CHART_COLORS[i % CHART_COLORS.length]} />
+              ))}
+            </Pie>
+            <Tooltip content={<ChartTooltip />} />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+      <div style={{ fontSize: 13 }}>
+        {data.map((d, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <span
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: 999,
+                background: d.color || CHART_COLORS[i % CHART_COLORS.length],
+                display: "inline-block",
+              }}
+            />
+            <span style={{ color: COLORS.text }}>{d.name}</span>
+            <span style={{ color: COLORS.muted }}>
+              {d.value.toLocaleString("es-MX")} ({total ? ((d.value / total) * 100).toFixed(0) : 0}%)
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Table({ columns, rows }) {
   return (
-    <div style={{ overflowX: "auto" }}>
+    <div style={{ overflowX: "auto", border: `1px solid ${COLORS.border}`, borderRadius: 10, background: COLORS.bgCard }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr>
@@ -540,12 +712,14 @@ function Table({ columns, rows }) {
                 style={{
                   textAlign: c.align || "left",
                   padding: "10px 12px",
-                  color: COLORS.gold,
+                  color: COLORS.navy,
+                  background: COLORS.bgCardAlt,
                   borderBottom: `1px solid ${COLORS.border}`,
                   whiteSpace: "nowrap",
                   fontSize: 11,
                   textTransform: "uppercase",
                   letterSpacing: 0.4,
+                  fontWeight: 700,
                 }}
               >
                 {c.header}
@@ -555,7 +729,7 @@ function Table({ columns, rows }) {
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i} style={{ background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.02)" }}>
+            <tr key={i} style={{ background: i % 2 === 0 ? "transparent" : COLORS.bgCardAlt }}>
               {columns.map((c) => (
                 <td
                   key={c.key}
@@ -605,12 +779,12 @@ function ResumenEjecutivo({ leads, investmentTotal, weeklyRows }) {
       {alertaNC && (
         <div
           style={{
-            background: "rgba(220,38,38,0.15)",
-            border: `1px solid ${COLORS.red}`,
+            background: "#FBE7EB",
+            border: `1px solid ${COLORS.crimson}`,
             borderRadius: 10,
             padding: "12px 16px",
             marginBottom: 18,
-            color: "#FCA5A5",
+            color: "#8A0F2C",
             fontSize: 13,
           }}
         >
@@ -637,17 +811,34 @@ function ResumenEjecutivo({ leads, investmentTotal, weeklyRows }) {
         <KpiCard label="Cierres (Programa Aceptado)" value={funnelAll.cierres.toLocaleString("es-MX")} />
       </div>
 
-      <div
-        style={{
-          background: COLORS.bgCard,
-          border: `1px solid ${COLORS.border}`,
-          borderRadius: 12,
-          padding: 20,
-        }}
-      >
-        <div style={{ color: COLORS.gold, fontSize: 13, fontWeight: 700, marginBottom: 10 }}>
-          Semáforo de salud del pipeline
-        </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16, marginBottom: 20 }}>
+        <Card>
+          <SectionLabel>Embudo del pipeline (todos los leads)</SectionLabel>
+          <SimpleBarChart
+            layout="vertical"
+            height={220}
+            data={[
+              { label: "Lead", value: funnelAll.total },
+              { label: "Mini-COD", value: funnelAll.miniCod },
+              { label: "COD", value: funnelAll.cod },
+              { label: "Programa Aceptado", value: funnelAll.cierres },
+            ]}
+            bars={[{ key: "value", name: "Leads", color: COLORS.navy }]}
+          />
+        </Card>
+        <Card>
+          <SectionLabel>Pagados vs orgánicos</SectionLabel>
+          <SimpleDonut
+            data={[
+              { name: "Pagados (Rockin)", value: funnelPaid.total, color: COLORS.navy },
+              { name: "Orgánicos", value: funnelAll.total - funnelPaid.total, color: COLORS.crimson },
+            ]}
+          />
+        </Card>
+      </div>
+
+      <Card>
+        <SectionLabel>Semáforo de salud del pipeline</SectionLabel>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 20, fontSize: 13 }}>
           <div>
             <Badge color={semaforo("noContactado", funnelAll.noContactadosPct)} />
@@ -662,7 +853,7 @@ function ResumenEjecutivo({ leads, investmentTotal, weeklyRows }) {
             Mini-COD: {fmtPct(funnelAll.miniCodPct)}
           </div>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }
@@ -682,6 +873,7 @@ function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid }) {
     label: r.label,
     "CPL pagado": r.cplPagado ? Math.round(r.cplPagado) : null,
     "CPL general": r.cplGeneral ? Math.round(r.cplGeneral) : null,
+    Leads: r.leadsTotal,
   }));
 
   return (
@@ -702,27 +894,27 @@ function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid }) {
         </TabButton>
       </div>
 
-      <div
-        style={{
-          background: COLORS.bgCard,
-          border: `1px solid ${COLORS.border}`,
-          borderRadius: 12,
-          padding: 16,
-          marginBottom: 20,
-          height: 300,
-        }}
-      >
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" />
-            <XAxis dataKey="label" stroke={COLORS.muted} tick={{ fontSize: 11 }} />
-            <YAxis stroke={COLORS.muted} tick={{ fontSize: 11 }} />
-            <Tooltip contentStyle={{ background: COLORS.bg, border: `1px solid ${COLORS.border}` }} />
-            <Legend />
-            <Line type="monotone" dataKey="CPL pagado" stroke={COLORS.gold} strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="CPL general" stroke={COLORS.teal} strokeWidth={2} dot={false} />
-          </LineChart>
-        </ResponsiveContainer>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+        <Card>
+          <SectionLabel>CPL pagado vs CPL general</SectionLabel>
+          <div style={{ height: 260 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" />
+                <XAxis dataKey="label" stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+                <YAxis stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+                <Tooltip content={<ChartTooltip />} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Line type="monotone" dataKey="CPL pagado" stroke={COLORS.navy} strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="CPL general" stroke={COLORS.crimson} strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+        <Card>
+          <SectionLabel>Volumen de leads por período</SectionLabel>
+          <SimpleBarChart data={chartData} bars={[{ key: "Leads", color: COLORS.blue }]} height={260} />
+        </Card>
       </div>
 
       <Table
@@ -831,6 +1023,7 @@ function SeguimientoFinal({ leads }) {
     (l) => l.dias !== null && l.dias > THRESHOLDS.diasSF.green && l.dias <= THRESHOLDS.diasSF.yellow
   ).length;
   const conAdan = sfLeads.filter((l) => l.esAdan).length;
+  const enVerde = sfLeads.length - urgentes - enRiesgo;
 
   return (
     <div>
@@ -842,6 +1035,20 @@ function SeguimientoFinal({ leads }) {
           <KpiCard label="Asignados a Adán Cortés" value={conAdan} color={COLORS.red} sub="Requieren reasignación" />
         )}
       </div>
+
+      {sfLeads.length > 0 && (
+        <Card style={{ marginBottom: 20 }}>
+          <SectionLabel>Distribución por urgencia</SectionLabel>
+          <SimpleDonut
+            data={[
+              { name: "En tiempo (≤35d)", value: enVerde, color: COLORS.green },
+              { name: "En riesgo (35-65d)", value: enRiesgo, color: COLORS.yellow },
+              { name: "Urgente (>65d)", value: urgentes, color: COLORS.red },
+            ]}
+          />
+        </Card>
+      )}
+
       <Table
         columns={[
           { key: "nombre", header: "Nombre" },
@@ -906,6 +1113,8 @@ function CampanasUtm({ leads }) {
     })
     .sort((a, b) => b.miniCodPct - a.miniCodPct);
 
+  const top8 = rows.slice(0, 8).map((r) => ({ label: r.campania, "Mini-COD%": Math.round(r.miniCodPct * 10) / 10 }));
+
   return (
     <div>
       <div style={{ color: COLORS.muted, fontSize: 13, marginBottom: 14 }}>
@@ -913,6 +1122,19 @@ function CampanasUtm({ leads }) {
         Campaña identificada por <code>utm_campaign (Sospechosos convertidos)</code>; leads sin UTM (pre-abril
         2026) se agrupan como "Sin UTM".
       </div>
+
+      {top8.length > 0 && (
+        <Card style={{ marginBottom: 20 }}>
+          <SectionLabel>Top campañas por Mini-COD%</SectionLabel>
+          <SimpleBarChart
+            layout="vertical"
+            height={Math.max(180, top8.length * 36)}
+            data={top8}
+            bars={[{ key: "Mini-COD%", color: COLORS.navy }]}
+          />
+        </Card>
+      )}
+
       <Table
         columns={[
           { key: "campania", header: "Campaña" },
@@ -946,9 +1168,16 @@ function OpsSeisSemanas({ weeklyAll, leads }) {
 
   return (
     <div>
-      <div style={{ color: COLORS.gold, fontSize: 13, fontWeight: 700, marginBottom: 8 }}>
-        Cohorte — leads que ENTRARON cada semana y su avance
-      </div>
+      <SectionLabel>Cohorte — leads que ENTRARON cada semana y su avance</SectionLabel>
+      <Card style={{ marginBottom: 16 }}>
+        <SimpleBarChart
+          data={cohorte}
+          bars={[
+            { key: "leadsTotal", name: "Leads", color: COLORS.navy },
+            { key: "cierres", name: "Cierres", color: COLORS.crimson },
+          ]}
+        />
+      </Card>
       <Table
         columns={[
           { key: "label", header: "Semana" },
@@ -977,13 +1206,23 @@ function OpsSeisSemanas({ weeklyAll, leads }) {
         rows={cohorte}
       />
 
-      <div style={{ color: COLORS.gold, fontSize: 13, fontWeight: 700, margin: "24px 0 8px" }}>
-        Actividad real — llamadas/citas que OCURRIERON cada semana
+      <div style={{ marginTop: 28 }}>
+        <SectionLabel>Actividad real — llamadas/citas que OCURRIERON cada semana</SectionLabel>
       </div>
       <div style={{ color: COLORS.muted, fontSize: 12, marginBottom: 10 }}>
         Cuenta el evento en la semana en que sucedió, sin importar cuándo entró el lead. Complementa la
         vista de cohorte de arriba, que mide por fecha de entrada.
       </div>
+      <Card style={{ marginBottom: 16 }}>
+        <SimpleBarChart
+          data={actividad}
+          bars={[
+            { key: "miniCod", name: "Mini-COD", color: COLORS.navy },
+            { key: "cod", name: "COD", color: COLORS.blue },
+            { key: "diagnostico", name: "Diagnóstico", color: COLORS.crimson },
+          ]}
+        />
+      </Card>
       <Table
         columns={[
           { key: "label", header: "Semana" },
@@ -1012,6 +1251,24 @@ function CostosPorEtapa({ leads, investmentTotal }) {
         etapa. Entre más adelante en el embudo, más caro se ve el costo — es normal, porque el mismo peso
         invertido se reparte entre menos leads.
       </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+        <Card>
+          <SectionLabel>Leads pagados por etapa</SectionLabel>
+          <SimpleBarChart
+            data={stages.map((s) => ({ label: s.label, Leads: s.count }))}
+            bars={[{ key: "Leads", color: COLORS.navy }]}
+          />
+        </Card>
+        <Card>
+          <SectionLabel>Costo por lead en esta etapa</SectionLabel>
+          <SimpleBarChart
+            data={stages.map((s) => ({ label: s.label, Costo: s.costo ? Math.round(s.costo) : 0 }))}
+            bars={[{ key: "Costo", color: COLORS.crimson }]}
+          />
+        </Card>
+      </div>
+
       <Table
         columns={[
           { key: "label", header: "Etapa" },
@@ -1055,6 +1312,18 @@ function TotalVsRockin({ monthlyAll, monthlyPaid }) {
         Compara el total de leads/cierres del CRM (todas las fuentes) contra los que vienen de fuentes
         pagadas de Rockin (Rockin + Facebook Ads + Instagram).
       </div>
+
+      <Card style={{ marginBottom: 20 }}>
+        <SectionLabel>Leads: total vs. Rockin, por mes</SectionLabel>
+        <SimpleBarChart
+          data={rows.map((r) => ({ label: r.label, "Leads total": r.leadsTotal, "Leads Rockin": r.leadsRockin }))}
+          bars={[
+            { key: "Leads total", color: COLORS.crimson },
+            { key: "Leads Rockin", color: COLORS.navy },
+          ]}
+        />
+      </Card>
+
       <Table
         columns={[
           { key: "label", header: "Mes" },
@@ -1076,6 +1345,11 @@ function TotalVsRockin({ monthlyAll, monthlyPaid }) {
 
 function PipelineMensualFase({ leads }) {
   const { rows, columns } = computePipelineMensualPorFase(leads);
+  const chartData = rows.map((r) => {
+    const entry = { label: r.label };
+    columns.forEach((c) => (entry[c] = r.fases[c] || 0));
+    return entry;
+  });
 
   return (
     <div>
@@ -1084,6 +1358,25 @@ function PipelineMensualFase({ leads }) {
         menos frecuentes se agrupan como "Otras". Útil para ver, por ejemplo, cuántos leads de mayo siguen
         atorados en una etapa temprana.
       </div>
+
+      <Card style={{ marginBottom: 20 }}>
+        <SectionLabel>Composición de fase por mes de entrada</SectionLabel>
+        <div style={{ height: 300 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+              <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" />
+              <XAxis dataKey="label" stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+              <YAxis stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+              <Tooltip content={<ChartTooltip />} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              {columns.map((c, i) => (
+                <Bar key={c} dataKey={c} stackId="fase" fill={CHART_COLORS[i % CHART_COLORS.length]} />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
       <Table
         columns={[
           { key: "label", header: "Mes de entrada" },
@@ -1122,6 +1415,9 @@ export default function App() {
           fetchCsv(TABS_SOURCE.zoho),
         ]);
         if (cancelled) return;
+        assertColumns(metaRows, ["Year", "Month", "Total Cost"], TABS_SOURCE.meta);
+        assertColumns(googleRows, ["Date", "Month", "Cost"], TABS_SOURCE.google);
+        assertColumns(zohoRows, ["ID de registro", "Fase", "Fuente de Sospechoso"], TABS_SOURCE.zoho);
         const meta = processMetaInvestment(metaRows);
         const google = processGoogleInvestment(googleRows);
         const zoho = processZohoLeads(zohoRows);
@@ -1182,13 +1478,13 @@ export default function App() {
         minHeight: "100vh",
         background: COLORS.bg,
         color: COLORS.text,
-        fontFamily: "'Inter', 'DM Sans', system-ui, sans-serif",
+        fontFamily: FONT_BODY,
         padding: "28px 24px 60px",
       }}
     >
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0, color: COLORS.gold }}>
+          <h1 style={{ fontFamily: FONT_DISPLAY, fontSize: 26, fontWeight: 700, margin: 0, color: COLORS.navyDeep }}>
             Dashboard Comercial — Altamirano &amp; Anaya
           </h1>
           <span style={{ fontSize: 12, color: COLORS.muted }}>ActionCoach · gestionado por Rockin</span>
@@ -1206,11 +1502,11 @@ export default function App() {
         {status === "error" && (
           <div
             style={{
-              background: "rgba(220,38,38,0.12)",
-              border: `1px solid ${COLORS.red}`,
+              background: "#FBE7EB",
+              border: `1px solid ${COLORS.crimson}`,
               borderRadius: 10,
               padding: 20,
-              color: "#FCA5A5",
+              color: "#8A0F2C",
               fontSize: 13,
             }}
           >
