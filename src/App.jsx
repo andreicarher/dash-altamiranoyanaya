@@ -122,6 +122,26 @@ function isFilled(v) {
   return v !== undefined && v !== null && String(v).trim() !== "";
 }
 
+const MESES_ABREV = {
+  ene: 0, feb: 1, mar: 2, abr: 3, may: 4, jun: 5,
+  jul: 6, ago: 7, sep: 8, oct: 9, nov: 10, dic: 11,
+};
+
+// Las columnas "Date" de Query-Meta/Query-Google vienen como "4-ago"
+// (día-mes abreviado en español, sin año). Combinamos con el año que sí
+// tenemos por otra columna para reconstruir una fecha real y así poder
+// filtrar por rango de fechas exacto (no solo por mes/semana).
+function parseSpanishAbbrevDate(str, year) {
+  if (!str || !year) return null;
+  const m = String(str).trim().toLowerCase().match(/^(\d{1,2})-([a-záéíóúñ]{3,4})/i);
+  if (!m) return null;
+  const day = parseInt(m[1], 10);
+  const mon = MESES_ABREV[m[2].slice(0, 3)];
+  if (mon === undefined) return null;
+  const d = new Date(year, mon, day);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 // Semana ISO (lunes a domingo) — misma convención que usa Meta/ZOHO
 // en sus columnas "Week (Starting on Monday)" / "SEMANA CREACIÓN".
 function isoWeek(date) {
@@ -197,29 +217,58 @@ function assertColumns(rows, requiredCols, sheetName) {
    PROCESAMIENTO: INVERSIÓN
    ------------------------------------------------------------------------- */
 
+// Nombres EXACTOS de campaña de Google Ads activas al momento de construir
+// esto (confirmado por Andrei el 05-ago-2026). Cualquier campaña que no
+// matchee ninguna de las dos cae en "otras" — así, si mañana se crea una
+// campaña nueva, no se clasifica mal en silencio, se ve aparte y hay que
+// mapearla a mano aquí.
+const GOOGLE_CAMPAIGN_MAP = {
+  "ro_mx_lea_pro_desafio": "search",
+  "ro_mx_awa_bra_youtube canal": "youtube",
+};
+function classifyGoogleCampaign(campaignName) {
+  const norm = normalize(campaignName);
+  return GOOGLE_CAMPAIGN_MAP[norm] || "otras";
+}
+
 function processMetaInvestment(rows) {
-  // columnas: Year, Month, Date, Week (Starting on Monday), Campaign name, ..., Total Cost
+  // columnas: Year, Month, Date, Week (Starting on Monday), Campaign name, ..., Total Cost, ..., Website leads
   const out = [];
   for (const r of rows) {
     const year = parseInt(pick(r, ["Year"]), 10);
     const month = parseInt(pick(r, ["Month"]), 10);
     const week = parseInt(pick(r, ["Week (Starting on Monday)", "Week"]), 10);
     const cost = toNumber(pick(r, ["Total Cost"]));
-    if (!year || !month) continue;
-    out.push({ year, month, week: isNaN(week) ? null : week, cost, canal: "Meta" });
+    const websiteLeads = toNumber(pick(r, ["Website leads"]));
+    if (!year || year < 2020 || year > 2035 || !month) continue;
+    const date = parseSpanishAbbrevDate(pick(r, ["Date"]), year);
+    out.push({ year, month, week: isNaN(week) ? null : week, date, cost, websiteLeads, canal: "Meta" });
   }
   return out;
 }
 
 function processGoogleInvestment(rows) {
-  // primer bloque: Date, Week (Starting on Monday), Month, Campaign, ..., Cost, ...
+  // primer bloque: Date, Week (Starting on Monday), Month, Campaign, ..., Cost, Conversions, ...
   const out = [];
   for (const r of rows) {
     const month = parseInt(pick(r, ["Month"]), 10);
     const week = parseInt(pick(r, ["Week (Starting on Monday)", "Week"]), 10);
     const cost = toNumber(pick(r, ["Cost"]));
+    const conversions = toNumber(pick(r, ["Conversions"]));
+    const campaign = pick(r, ["Campaign"]) || "";
     if (!month) continue;
-    out.push({ year: ASSUMED_YEAR_GOOGLE, month, week: isNaN(week) ? null : week, cost, canal: "Google" });
+    const date = parseSpanishAbbrevDate(pick(r, ["Date"]), ASSUMED_YEAR_GOOGLE);
+    out.push({
+      year: ASSUMED_YEAR_GOOGLE,
+      month,
+      week: isNaN(week) ? null : week,
+      date,
+      cost,
+      conversions,
+      campaign,
+      googleChannel: classifyGoogleCampaign(campaign),
+      canal: "Google",
+    });
   }
   return out;
 }
@@ -244,9 +293,18 @@ function processZohoLeads(rows) {
     const horaCreacion = parseDMY(pick(r, ["Hora de creación"]));
     const horaModificacion = parseDMY(pick(r, ["Hora de modificación"]));
 
-    const anioCreacion = parseInt(pick(r, ["AÑO CREACIÓN"]), 10) || (horaCreacion ? horaCreacion.getFullYear() : null);
-    const mesCreacion = parseInt(pick(r, ["MES CREACIÓN"]), 10) || (horaCreacion ? horaCreacion.getMonth() + 1 : null);
-    const semanaCreacion = parseInt(pick(r, ["SEMANA CREACIÓN LEAD"]), 10) || null;
+    let anioCreacion = parseInt(pick(r, ["AÑO CREACIÓN"]), 10) || (horaCreacion ? horaCreacion.getFullYear() : null);
+    let mesCreacion = parseInt(pick(r, ["MES CREACIÓN"]), 10) || (horaCreacion ? horaCreacion.getMonth() + 1 : null);
+    let semanaCreacion = parseInt(pick(r, ["SEMANA CREACIÓN LEAD"]), 10) || null;
+    // Filas con fecha corrupta o vacía en el Sheet a veces caen en el clásico
+    // "día cero" de hojas de cálculo (30/31-dic-1899). Cualquier año fuera de
+    // un rango razonable se descarta para que no ensucie las vistas por
+    // mes/semana (el lead sigue contando en los totales generales).
+    if (!anioCreacion || anioCreacion < 2020 || anioCreacion > 2035) {
+      anioCreacion = null;
+      mesCreacion = null;
+      semanaCreacion = null;
+    }
 
     const fechaMiniCod = pick(r, ["Fecha/hora de MiniCOD"]);
     const fechaCodLuisa = pick(r, ["Fecha/hora COD Luisa"]);
@@ -415,9 +473,10 @@ function computeCostosPorEtapa(paidLeads, investmentTotal) {
   return stages.map((s) => ({ ...s, costo: s.count ? investmentTotal / s.count : null }));
 }
 
-// Distribución de la Fase ACTUAL de los leads, agrupada por el mes en que
-// ENTRARON. Útil para ver, mes a mes, en qué parte del pipeline se quedaron.
-function computePipelineMensualPorFase(leads, topN = 6) {
+// Distribución de la Fase ACTUAL de los leads, agrupada por el período en
+// que ENTRARON (mes o semana, según granularidad). Útil para ver mes/semana
+// a mes/semana en qué parte del pipeline se quedaron.
+function computePipelinePorFase(leads, periodKey, topN = 6) {
   const faseCounts = {};
   for (const l of leads) {
     const f = l.fase || "Sin fase";
@@ -429,23 +488,25 @@ function computePipelineMensualPorFase(leads, topN = 6) {
     .map(([f]) => f);
   const topSet = new Set(topFases);
 
-  const monthGroups = {};
+  const groups = {};
   for (const l of leads) {
-    if (!l.anioCreacion || !l.mesCreacion) continue;
-    const k = `${l.anioCreacion}-${String(l.mesCreacion).padStart(2, "0")}`;
-    if (!monthGroups[k]) {
-      monthGroups[k] = { key: k, year: l.anioCreacion, period: l.mesCreacion, total: 0, fases: {} };
+    if (!l.anioCreacion) continue;
+    const p = periodKey === "mes" ? l.mesCreacion : l.semanaCreacion;
+    if (!p) continue;
+    const k = `${l.anioCreacion}-${String(p).padStart(2, "0")}`;
+    if (!groups[k]) {
+      groups[k] = { key: k, year: l.anioCreacion, period: p, total: 0, fases: {} };
     }
-    const g = monthGroups[k];
+    const g = groups[k];
     g.total += 1;
     const f = topSet.has(l.fase) ? l.fase : l.fase ? "Otras" : "Sin fase";
     g.fases[f] = (g.fases[f] || 0) + 1;
   }
 
   const columns = [...topFases, "Otras"];
-  const rows = Object.values(monthGroups).map((g) => ({
+  const rows = Object.values(groups).map((g) => ({
     ...g,
-    label: `${MESES_LARGO[g.period - 1]} ${g.year}`,
+    label: periodKey === "mes" ? `${MESES_LARGO[g.period - 1]} ${g.year}` : `Sem ${g.period} ${g.year}`,
   }));
   rows.sort((a, b) => a.year - b.year || a.period - b.period);
   return { rows, columns };
@@ -524,13 +585,13 @@ function KpiCard({ label, value, sub, color }) {
         boxShadow: "0 1px 3px rgba(33,29,29,0.06)",
       }}
     >
-      <div style={{ fontSize: 11, color: COLORS.muted, textTransform: "uppercase", letterSpacing: 0.6, fontWeight: 600 }}>
+      <div style={{ fontSize: 12, color: COLORS.muted, textTransform: "uppercase", letterSpacing: 0.6, fontWeight: 600 }}>
         {label}
       </div>
-      <div style={{ fontFamily: FONT_DISPLAY, fontSize: 30, fontWeight: 700, color: color || COLORS.navyDeep, marginTop: 6 }}>
+      <div style={{ fontFamily: FONT_DISPLAY, fontSize: 38, fontWeight: 700, color: color || COLORS.navyDeep, marginTop: 6 }}>
         {value}
       </div>
-      {sub && <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 4 }}>{sub}</div>}
+      {sub && <div style={{ fontSize: 12.5, color: COLORS.muted, marginTop: 4 }}>{sub}</div>}
     </div>
   );
 }
@@ -608,8 +669,9 @@ function SectionLabel({ children }) {
   );
 }
 
-function ChartTooltip({ active, payload, label }) {
+function ChartTooltip({ active, payload, label, isMoney = false }) {
   if (!active || !payload || !payload.length) return null;
+  const fmt = (v) => (typeof v === "number" ? (isMoney ? fmtMoney(v) : v.toLocaleString("es-MX")) : v);
   return (
     <div
       style={{
@@ -624,7 +686,7 @@ function ChartTooltip({ active, payload, label }) {
       <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.text }}>{label}</div>
       {payload.map((p, i) => (
         <div key={i} style={{ color: p.color }}>
-          {p.name}: <strong>{typeof p.value === "number" ? p.value.toLocaleString("es-MX") : p.value}</strong>
+          {p.name}: <strong>{fmt(p.value)}</strong>
         </div>
       ))}
     </div>
@@ -632,24 +694,26 @@ function ChartTooltip({ active, payload, label }) {
 }
 
 // Gráfica de barras genérica reutilizable en varias vistas.
-function SimpleBarChart({ data, bars, xKey = "label", height = 260, layout = "horizontal" }) {
+// moneyAxis=true formatea el eje de valores y el tooltip como pesos MXN.
+function SimpleBarChart({ data, bars, xKey = "label", height = 260, layout = "horizontal", moneyAxis = false }) {
+  const valueAxisProps = moneyAxis ? { tickFormatter: (v) => fmtMoney(v) } : {};
   return (
     <div style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} layout={layout} margin={{ top: 10, right: 16, left: layout === "vertical" ? 40 : 0, bottom: 0 }}>
+        <BarChart data={data} layout={layout} margin={{ top: 10, right: 16, left: layout === "vertical" ? 60 : 0, bottom: 0 }}>
           <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" horizontal={layout !== "vertical"} vertical={layout === "vertical"} />
           {layout === "vertical" ? (
             <>
-              <XAxis type="number" stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+              <XAxis type="number" stroke={COLORS.muted} tick={{ fontSize: 11 }} {...valueAxisProps} />
               <YAxis type="category" dataKey={xKey} stroke={COLORS.muted} tick={{ fontSize: 11 }} width={140} />
             </>
           ) : (
             <>
-              <XAxis dataKey={xKey} stroke={COLORS.muted} tick={{ fontSize: 11 }} />
-              <YAxis stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+              <XAxis dataKey={xKey} type="category" stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+              <YAxis stroke={COLORS.muted} tick={{ fontSize: 11 }} {...valueAxisProps} />
             </>
           )}
-          <Tooltip content={<ChartTooltip />} />
+          <Tooltip content={<ChartTooltip isMoney={moneyAxis} />} />
           {bars.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
           {bars.map((b, i) => (
             <Bar key={b.key} dataKey={b.key} name={b.name || b.key} fill={b.color || CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]} />
@@ -703,7 +767,7 @@ function SimpleDonut({ data, height = 240 }) {
 function Table({ columns, rows }) {
   return (
     <div style={{ overflowX: "auto", border: `1px solid ${COLORS.border}`, borderRadius: 10, background: COLORS.bgCard }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
         <thead>
           <tr>
             {columns.map((c) => (
@@ -763,7 +827,7 @@ function Table({ columns, rows }) {
    VISTA 1: RESUMEN EJECUTIVO
    ------------------------------------------------------------------------- */
 
-function ResumenEjecutivo({ leads, investmentTotal, weeklyRows }) {
+function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows }) {
   const paidLeads = leads.filter((l) => l.paid);
   const funnelAll = computeFunnel(leads);
   const funnelPaid = computeFunnel(paidLeads);
@@ -773,6 +837,24 @@ function ResumenEjecutivo({ leads, investmentTotal, weeklyRows }) {
   const last2 = weeklyRows.slice(-2);
   const alertaNC =
     last2.length === 2 && last2.every((w) => w.noContactadosPct > THRESHOLDS.noContactado.yellow);
+
+  // Inversión y resultados por canal. "Resultado" es la métrica que reporta
+  // cada plataforma (NO es lo mismo que un lead real en ZOHO):
+  // Meta -> Website leads, Google -> Conversions.
+  const metaRows = investment.filter((r) => r.canal === "Meta");
+  const googleSearchRows = investment.filter((r) => r.canal === "Google" && r.googleChannel === "search");
+  const googleYoutubeRows = investment.filter((r) => r.canal === "Google" && r.googleChannel === "youtube");
+  const googleOtrasRows = investment.filter((r) => r.canal === "Google" && r.googleChannel === "otras");
+
+  const sum = (rows, key) => rows.reduce((s, r) => s + (r[key] || 0), 0);
+  const canales = [
+    { label: "Meta Ads", inversion: sum(metaRows, "cost"), resultado: sum(metaRows, "websiteLeads"), resultadoLabel: "Website leads" },
+    { label: "Google Search", inversion: sum(googleSearchRows, "cost"), resultado: sum(googleSearchRows, "conversions"), resultadoLabel: "Conversiones" },
+    { label: "Google YouTube", inversion: sum(googleYoutubeRows, "cost"), resultado: sum(googleYoutubeRows, "conversions"), resultadoLabel: "Conversiones" },
+    ...(googleOtrasRows.length
+      ? [{ label: "Google (otras campañas)", inversion: sum(googleOtrasRows, "cost"), resultado: sum(googleOtrasRows, "conversions"), resultadoLabel: "Conversiones" }]
+      : []),
+  ].map((c) => ({ ...c, costoPorResultado: c.resultado ? c.inversion / c.resultado : null }));
 
   return (
     <div>
@@ -794,7 +876,7 @@ function ResumenEjecutivo({ leads, investmentTotal, weeklyRows }) {
       )}
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 24 }}>
-        <KpiCard label="Leads pagados (histórico)" value={funnelPaid.total.toLocaleString("es-MX")} />
+        <KpiCard label="Leads pagados (período)" value={funnelPaid.total.toLocaleString("es-MX")} />
         <KpiCard label="Inversión total" value={fmtMoney(investmentTotal)} />
         <KpiCard
           label="CPL pagado"
@@ -810,6 +892,35 @@ function ResumenEjecutivo({ leads, investmentTotal, weeklyRows }) {
         />
         <KpiCard label="Cierres (Programa Aceptado)" value={funnelAll.cierres.toLocaleString("es-MX")} />
       </div>
+
+      <Card style={{ marginBottom: 20 }}>
+        <SectionLabel>Inversión y resultados por canal</SectionLabel>
+        <div style={{ color: COLORS.muted, fontSize: 12.5, marginBottom: 14 }}>
+          "Resultado" es la métrica que reporta cada plataforma publicitaria (Website leads en Meta,
+          Conversions en Google) — no es lo mismo que un lead real dado de alta en ZOHO, es la atribución
+          que hace la propia plataforma.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+          <SimpleBarChart
+            data={canales.map((c) => ({ label: c.label, Inversión: Math.round(c.inversion) }))}
+            bars={[{ key: "Inversión", color: COLORS.navy }]}
+            moneyAxis
+          />
+          <SimpleBarChart
+            data={canales.map((c) => ({ label: c.label, Resultado: Math.round(c.resultado) }))}
+            bars={[{ key: "Resultado", color: COLORS.crimson }]}
+          />
+        </div>
+        <Table
+          columns={[
+            { key: "label", header: "Canal" },
+            { key: "inversion", header: "Inversión", align: "right", render: (r) => fmtMoney(r.inversion) },
+            { key: "resultado", header: "Resultado", align: "right", render: (r) => `${r.resultado.toLocaleString("es-MX")} (${r.resultadoLabel})` },
+            { key: "costoPorResultado", header: "Costo por resultado", align: "right", render: (r) => fmtMoney(r.costoPorResultado) },
+          ]}
+          rows={canales}
+        />
+      </Card>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16, marginBottom: 20 }}>
         <Card>
@@ -839,7 +950,7 @@ function ResumenEjecutivo({ leads, investmentTotal, weeklyRows }) {
 
       <Card>
         <SectionLabel>Semáforo de salud del pipeline</SectionLabel>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 20, fontSize: 13 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 20, fontSize: 14.5 }}>
           <div>
             <Badge color={semaforo("noContactado", funnelAll.noContactadosPct)} />
             No contactados: {fmtPct(funnelAll.noContactadosPct)}
@@ -862,9 +973,16 @@ function ResumenEjecutivo({ leads, investmentTotal, weeklyRows }) {
    VISTA 2: EVOLUCIÓN (mensual / semanal)
    ------------------------------------------------------------------------- */
 
-function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid }) {
-  const [periodo, setPeriodo] = useState("mes");
+function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid, granularityAuto }) {
+  const [periodo, setPeriodo] = useState(granularityAuto);
   const [soloPagadas, setSoloPagadas] = useState(false);
+
+  // El botón manual sigue disponible, pero cada vez que cambia el filtro
+  // global de fechas (y por lo tanto la granularidad automática), el toggle
+  // se resincroniza a esa recomendación por default.
+  useEffect(() => {
+    setPeriodo(granularityAuto);
+  }, [granularityAuto]);
 
   const rows =
     periodo === "mes" ? (soloPagadas ? monthlyPaid : monthlyAll) : soloPagadas ? weeklyPaid : weeklyAll;
@@ -901,9 +1019,9 @@ function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid }) {
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                 <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" />
-                <XAxis dataKey="label" stroke={COLORS.muted} tick={{ fontSize: 11 }} />
-                <YAxis stroke={COLORS.muted} tick={{ fontSize: 11 }} />
-                <Tooltip content={<ChartTooltip />} />
+                <XAxis dataKey="label" type="category" stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+                <YAxis stroke={COLORS.muted} tick={{ fontSize: 11 }} tickFormatter={(v) => fmtMoney(v)} />
+                <Tooltip content={<ChartTooltip isMoney />} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Line type="monotone" dataKey="CPL pagado" stroke={COLORS.navy} strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="CPL general" stroke={COLORS.crimson} strokeWidth={2} dot={false} />
@@ -1265,6 +1383,7 @@ function CostosPorEtapa({ leads, investmentTotal }) {
           <SimpleBarChart
             data={stages.map((s) => ({ label: s.label, Costo: s.costo ? Math.round(s.costo) : 0 }))}
             bars={[{ key: "Costo", color: COLORS.crimson }]}
+            moneyAxis
           />
         </Card>
       </div>
@@ -1290,9 +1409,9 @@ function CostosPorEtapa({ leads, investmentTotal }) {
    VISTA 8: TOTAL VS ROCKIN
    ------------------------------------------------------------------------- */
 
-function TotalVsRockin({ monthlyAll, monthlyPaid }) {
-  const paidByKey = Object.fromEntries(monthlyPaid.map((r) => [r.key, r]));
-  const rows = monthlyAll.map((r) => {
+function TotalVsRockin({ periodAll, periodPaid, periodLabel }) {
+  const paidByKey = Object.fromEntries(periodPaid.map((r) => [r.key, r]));
+  const rows = periodAll.map((r) => {
     const p = paidByKey[r.key];
     const leadsRockin = p ? p.leadsTotal : 0;
     const cierresRockin = p ? p.cierres : 0;
@@ -1310,11 +1429,12 @@ function TotalVsRockin({ monthlyAll, monthlyPaid }) {
     <div>
       <div style={{ color: COLORS.muted, fontSize: 13, marginBottom: 14 }}>
         Compara el total de leads/cierres del CRM (todas las fuentes) contra los que vienen de fuentes
-        pagadas de Rockin (Rockin + Facebook Ads + Instagram).
+        pagadas de Rockin (Rockin + Facebook Ads + Instagram). Se agrupa por {periodLabel.toLowerCase()}
+        automáticamente según el rango de fechas seleccionado.
       </div>
 
       <Card style={{ marginBottom: 20 }}>
-        <SectionLabel>Leads: total vs. Rockin, por mes</SectionLabel>
+        <SectionLabel>Leads: total vs. Rockin, por {periodLabel.toLowerCase()}</SectionLabel>
         <SimpleBarChart
           data={rows.map((r) => ({ label: r.label, "Leads total": r.leadsTotal, "Leads Rockin": r.leadsRockin }))}
           bars={[
@@ -1326,7 +1446,7 @@ function TotalVsRockin({ monthlyAll, monthlyPaid }) {
 
       <Table
         columns={[
-          { key: "label", header: "Mes" },
+          { key: "label", header: periodLabel },
           { key: "leadsTotal", header: "Leads total", align: "right" },
           { key: "leadsRockin", header: "Leads Rockin", align: "right" },
           { key: "pctRockin", header: "% Rockin", align: "right", render: (r) => fmtPct(r.pctRockin) },
@@ -1343,8 +1463,9 @@ function TotalVsRockin({ monthlyAll, monthlyPaid }) {
    VISTA 9: PIPELINE MENSUAL POR FASE
    ------------------------------------------------------------------------- */
 
-function PipelineMensualFase({ leads }) {
-  const { rows, columns } = computePipelineMensualPorFase(leads);
+function PipelineMensualFase({ leads, periodKey }) {
+  const { rows, columns } = computePipelinePorFase(leads, periodKey);
+  const esMensual = periodKey === "mes";
   const chartData = rows.map((r) => {
     const entry = { label: r.label };
     columns.forEach((c) => (entry[c] = r.fases[c] || 0));
@@ -1354,18 +1475,18 @@ function PipelineMensualFase({ leads }) {
   return (
     <div>
       <div style={{ color: COLORS.muted, fontSize: 13, marginBottom: 14 }}>
-        Para cada mes de ENTRADA, muestra en qué Fase están HOY los leads que entraron ese mes. Las fases
-        menos frecuentes se agrupan como "Otras". Útil para ver, por ejemplo, cuántos leads de mayo siguen
-        atorados en una etapa temprana.
+        Para cada {esMensual ? "mes" : "semana"} de ENTRADA, muestra en qué Fase están HOY los leads que
+        entraron en ese {esMensual ? "mes" : "período"}. Las fases menos frecuentes se agrupan como "Otras".
+        Cambia automáticamente entre mes y semana según el rango de fechas que tengas seleccionado arriba.
       </div>
 
       <Card style={{ marginBottom: 20 }}>
-        <SectionLabel>Composición de fase por mes de entrada</SectionLabel>
+        <SectionLabel>Composición de fase por {esMensual ? "mes" : "semana"} de entrada</SectionLabel>
         <div style={{ height: 300 }}>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
               <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" />
-              <XAxis dataKey="label" stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+              <XAxis dataKey="label" type="category" stroke={COLORS.muted} tick={{ fontSize: 11 }} />
               <YAxis stroke={COLORS.muted} tick={{ fontSize: 11 }} />
               <Tooltip content={<ChartTooltip />} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
@@ -1379,7 +1500,7 @@ function PipelineMensualFase({ leads }) {
 
       <Table
         columns={[
-          { key: "label", header: "Mes de entrada" },
+          { key: "label", header: esMensual ? "Mes de entrada" : "Semana de entrada" },
           { key: "total", header: "Total", align: "right" },
           ...columns.map((c) => ({
             key: c,
@@ -1394,6 +1515,79 @@ function PipelineMensualFase({ leads }) {
   );
 }
 
+/* -------------------------------------------------------------------------
+   FILTRO GLOBAL DE FECHAS
+   ------------------------------------------------------------------------- */
+
+const DATE_PRESETS = [
+  { key: "30d", label: "Últimos 30 días" },
+  { key: "90d", label: "Últimos 3 meses" },
+  { key: "180d", label: "Últimos 6 meses" },
+  { key: "all", label: "Todo" },
+  { key: "custom", label: "Personalizado" },
+];
+
+function toInputDate(d) {
+  if (!d) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function DateRangeFilter({ preset, onPresetChange, customStart, customEnd, onCustomChange, rangeStart, rangeEnd, granularity }) {
+  return (
+    <Card style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+        {DATE_PRESETS.map((p) => (
+          <TabButton key={p.key} active={preset === p.key} onClick={() => onPresetChange(p.key)}>
+            {p.label}
+          </TabButton>
+        ))}
+        {preset === "custom" && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: 4 }}>
+            <input
+              type="date"
+              value={customStart}
+              onChange={(e) => onCustomChange(e.target.value, customEnd)}
+              style={{
+                padding: "8px 10px",
+                borderRadius: 8,
+                border: `1px solid ${COLORS.border}`,
+                fontFamily: FONT_BODY,
+                fontSize: 13,
+                color: COLORS.text,
+              }}
+            />
+            <span style={{ color: COLORS.muted, fontSize: 13 }}>a</span>
+            <input
+              type="date"
+              value={customEnd}
+              onChange={(e) => onCustomChange(customStart, e.target.value)}
+              style={{
+                padding: "8px 10px",
+                borderRadius: 8,
+                border: `1px solid ${COLORS.border}`,
+                fontFamily: FONT_BODY,
+                fontSize: 13,
+                color: COLORS.text,
+              }}
+            />
+          </div>
+        )}
+        <div style={{ marginLeft: "auto", fontSize: 12.5, color: COLORS.muted, textAlign: "right" }}>
+          {rangeStart && rangeEnd && (
+            <>
+              {rangeStart.toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })} —{" "}
+              {rangeEnd.toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}
+              <br />
+              Agrupando por <strong style={{ color: COLORS.navy }}>{granularity === "mes" ? "mes" : "semana"}</strong>
+            </>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 /* =========================================================================
    APP PRINCIPAL
    ========================================================================= */
@@ -1405,6 +1599,10 @@ export default function App() {
   const [investment, setInvestment] = useState([]);
   const [tab, setTab] = useState("resumen");
 
+  const [datePreset, setDatePreset] = useState("all");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -1415,8 +1613,8 @@ export default function App() {
           fetchCsv(TABS_SOURCE.zoho),
         ]);
         if (cancelled) return;
-        assertColumns(metaRows, ["Year", "Month", "Total Cost"], TABS_SOURCE.meta);
-        assertColumns(googleRows, ["Date", "Month", "Cost"], TABS_SOURCE.google);
+        assertColumns(metaRows, ["Year", "Month", "Date", "Total Cost", "Website leads"], TABS_SOURCE.meta);
+        assertColumns(googleRows, ["Date", "Month", "Cost", "Conversions", "Campaign"], TABS_SOURCE.google);
         assertColumns(zohoRows, ["ID de registro", "Fase", "Fuente de Sospechoso"], TABS_SOURCE.zoho);
         const meta = processMetaInvestment(metaRows);
         const google = processGoogleInvestment(googleRows);
@@ -1437,33 +1635,67 @@ export default function App() {
   }, []);
 
   // Las pestañas Query-Meta/Query-Google traen historial más largo (desde
-  // 2025) que la pestaña de leads (Base ZOHO OPS 2026). Si sumáramos toda la
-  // inversión histórica contra solo los leads que sí están en el CRM,
-  // el CPL saldría inflado artificialmente. Por eso acotamos la inversión
-  // a los mismos años que efectivamente tienen leads registrados.
-  const zohoYears = useMemo(() => new Set(leads.map((l) => l.anioCreacion).filter(Boolean)), [leads]);
-  const investmentInRange = useMemo(
-    () => (zohoYears.size ? investment.filter((r) => zohoYears.has(r.year)) : investment),
-    [investment, zohoYears]
-  );
+  // 2025) que la pestaña de leads (Base ZOHO OPS 2026). El rango de fechas
+  // efectivo (para el preset "Todo" y como tope de los presets relativos) se
+  // ancla en las fechas de los LEADS, no de la inversión — así nunca se
+  // vuelve a sumar inversión de un período sin leads correspondientes.
+  const dataExtent = useMemo(() => {
+    const dates = leads.map((l) => l.horaCreacion).filter(Boolean);
+    if (!dates.length) return null;
+    const times = dates.map((d) => d.getTime());
+    return { min: new Date(Math.min(...times)), max: new Date(Math.max(...times)) };
+  }, [leads]);
 
-  const investmentTotal = useMemo(() => investmentInRange.reduce((s, r) => s + r.cost, 0), [investmentInRange]);
+  const { rangeStart, rangeEnd, granularityAuto } = useMemo(() => {
+    if (!dataExtent) return { rangeStart: null, rangeEnd: null, granularityAuto: "mes" };
+    let end = new Date(dataExtent.max.getFullYear(), dataExtent.max.getMonth(), dataExtent.max.getDate(), 23, 59, 59);
+    let start;
+    if (datePreset === "custom" && customStart && customEnd) {
+      start = new Date(customStart + "T00:00:00");
+      end = new Date(customEnd + "T23:59:59");
+    } else if (datePreset === "all") {
+      start = dataExtent.min;
+    } else {
+      const days = { "30d": 30, "90d": 90, "180d": 180 }[datePreset] || 30;
+      start = new Date(end.getTime() - (days - 1) * 86400000);
+      if (start < dataExtent.min) start = dataExtent.min;
+    }
+    const spanDays = Math.max(1, Math.round((end - start) / 86400000) + 1);
+    return { rangeStart: start, rangeEnd: end, granularityAuto: spanDays > 30 ? "mes" : "semana" };
+  }, [datePreset, customStart, customEnd, dataExtent]);
 
-  const monthlyAll = useMemo(() => buildPeriodTable(leads, investmentInRange, "mes"), [leads, investmentInRange]);
+  const filteredLeads = useMemo(() => {
+    if (!rangeStart) return leads;
+    return leads.filter((l) => l.horaCreacion && l.horaCreacion >= rangeStart && l.horaCreacion <= rangeEnd);
+  }, [leads, rangeStart, rangeEnd]);
+
+  const filteredInvestment = useMemo(() => {
+    if (!rangeStart) return investment;
+    return investment.filter((r) => r.date && r.date >= rangeStart && r.date <= rangeEnd);
+  }, [investment, rangeStart, rangeEnd]);
+
+  const investmentTotal = useMemo(() => filteredInvestment.reduce((s, r) => s + r.cost, 0), [filteredInvestment]);
+
+  const monthlyAll = useMemo(() => buildPeriodTable(filteredLeads, filteredInvestment, "mes"), [filteredLeads, filteredInvestment]);
   const monthlyPaid = useMemo(
-    () => buildPeriodTable(leads.filter((l) => l.paid), investmentInRange, "mes"),
-    [leads, investmentInRange]
+    () => buildPeriodTable(filteredLeads.filter((l) => l.paid), filteredInvestment, "mes"),
+    [filteredLeads, filteredInvestment]
   );
-  const weeklyAll = useMemo(() => buildPeriodTable(leads, investmentInRange, "semana"), [leads, investmentInRange]);
+  const weeklyAll = useMemo(() => buildPeriodTable(filteredLeads, filteredInvestment, "semana"), [filteredLeads, filteredInvestment]);
   const weeklyPaid = useMemo(
-    () => buildPeriodTable(leads.filter((l) => l.paid), investmentInRange, "semana"),
-    [leads, investmentInRange]
+    () => buildPeriodTable(filteredLeads.filter((l) => l.paid), filteredInvestment, "semana"),
+    [filteredLeads, filteredInvestment]
   );
+
+  // Vistas que alternan mes/semana según la granularidad automática.
+  const periodAllAuto = granularityAuto === "mes" ? monthlyAll : weeklyAll;
+  const periodPaidAuto = granularityAuto === "mes" ? monthlyPaid : weeklyPaid;
+  const periodLabelAuto = granularityAuto === "mes" ? "Mes" : "Semana";
 
   const TABS = [
     { key: "resumen", label: "Resumen Ejecutivo" },
     { key: "evolucion", label: "Evolución" },
-    { key: "pipelineMensual", label: "Pipeline Mensual" },
+    { key: "pipelineMensual", label: granularityAuto === "mes" ? "Pipeline Mensual" : "Pipeline Semanal" },
     { key: "semana", label: "Semana vs Semana" },
     { key: "ops6", label: "OPS 6 Semanas" },
     { key: "sf", label: "Seguimiento Final" },
@@ -1522,6 +1754,26 @@ export default function App() {
 
         {status === "ready" && (
           <>
+            <DateRangeFilter
+              preset={datePreset}
+              onPresetChange={(p) => {
+                if (p === "custom" && !customStart && !customEnd && rangeStart && rangeEnd) {
+                  setCustomStart(toInputDate(rangeStart));
+                  setCustomEnd(toInputDate(rangeEnd));
+                }
+                setDatePreset(p);
+              }}
+              customStart={customStart}
+              customEnd={customEnd}
+              onCustomChange={(s, e) => {
+                setCustomStart(s);
+                setCustomEnd(e);
+              }}
+              rangeStart={rangeStart}
+              rangeEnd={rangeEnd}
+              granularity={granularityAuto}
+            />
+
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 24 }}>
               {TABS.map((t) => (
                 <TabButton key={t.key} active={tab === t.key} onClick={() => setTab(t.key)}>
@@ -1531,18 +1783,31 @@ export default function App() {
             </div>
 
             {tab === "resumen" && (
-              <ResumenEjecutivo leads={leads} investmentTotal={investmentTotal} weeklyRows={weeklyAll} />
+              <ResumenEjecutivo
+                leads={filteredLeads}
+                investment={filteredInvestment}
+                investmentTotal={investmentTotal}
+                weeklyRows={weeklyAll}
+              />
             )}
             {tab === "evolucion" && (
-              <Evolucion monthlyAll={monthlyAll} monthlyPaid={monthlyPaid} weeklyAll={weeklyAll} weeklyPaid={weeklyPaid} />
+              <Evolucion
+                monthlyAll={monthlyAll}
+                monthlyPaid={monthlyPaid}
+                weeklyAll={weeklyAll}
+                weeklyPaid={weeklyPaid}
+                granularityAuto={granularityAuto}
+              />
             )}
-            {tab === "pipelineMensual" && <PipelineMensualFase leads={leads} />}
+            {tab === "pipelineMensual" && <PipelineMensualFase leads={filteredLeads} periodKey={granularityAuto} />}
             {tab === "semana" && <SemanaVsSemana weeklyAll={weeklyAll} />}
-            {tab === "ops6" && <OpsSeisSemanas weeklyAll={weeklyAll} leads={leads} />}
-            {tab === "sf" && <SeguimientoFinal leads={leads} />}
-            {tab === "utm" && <CampanasUtm leads={leads} />}
-            {tab === "costos" && <CostosPorEtapa leads={leads} investmentTotal={investmentTotal} />}
-            {tab === "totalRockin" && <TotalVsRockin monthlyAll={monthlyAll} monthlyPaid={monthlyPaid} />}
+            {tab === "ops6" && <OpsSeisSemanas weeklyAll={weeklyAll} leads={filteredLeads} />}
+            {tab === "sf" && <SeguimientoFinal leads={filteredLeads} />}
+            {tab === "utm" && <CampanasUtm leads={filteredLeads} />}
+            {tab === "costos" && <CostosPorEtapa leads={filteredLeads} investmentTotal={investmentTotal} />}
+            {tab === "totalRockin" && (
+              <TotalVsRockin periodAll={periodAllAuto} periodPaid={periodPaidAuto} periodLabel={periodLabelAuto} />
+            )}
           </>
         )}
       </div>
