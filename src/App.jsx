@@ -36,6 +36,11 @@ const csvUrl = (sheetName) =>
   `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
 
 const ASSUMED_YEAR_GOOGLE = 2026;
+// Andrei confirmó (05-ago-2026) que solo se debe usar data de 2026 en todo
+// el dashboard — hay algunos leads viejos en el CRM con fecha corrupta o de
+// años anteriores (ej. 2022) que deben excluirse. Si el próximo año quieres
+// incluir 2027, actualiza este valor (o conviértelo en un rango).
+const VALID_YEAR = 2026;
 const PAID_SOURCES = ["rockin", "facebook ads", "instagram"];
 const NO_CONTACTADO_FASE = "identificación de sospechoso";
 const SEGUIMIENTO_FINAL_FASE = "seguimiento final";
@@ -240,7 +245,7 @@ function processMetaInvestment(rows) {
     const week = parseInt(pick(r, ["Week (Starting on Monday)", "Week"]), 10);
     const cost = toNumber(pick(r, ["Total Cost"]));
     const websiteLeads = toNumber(pick(r, ["Website leads"]));
-    if (!year || year < 2020 || year > 2035 || !month) continue;
+    if (!year || year !== VALID_YEAR || !month) continue;
     const date = parseSpanishAbbrevDate(pick(r, ["Date"]), year);
     out.push({ year, month, week: isNaN(week) ? null : week, date, cost, websiteLeads, canal: "Meta" });
   }
@@ -300,7 +305,7 @@ function processZohoLeads(rows) {
     // "día cero" de hojas de cálculo (30/31-dic-1899). Cualquier año fuera de
     // un rango razonable se descarta para que no ensucie las vistas por
     // mes/semana (el lead sigue contando en los totales generales).
-    if (!anioCreacion || anioCreacion < 2020 || anioCreacion > 2035) {
+    if (!anioCreacion || anioCreacion !== VALID_YEAR) {
       anioCreacion = null;
       mesCreacion = null;
       semanaCreacion = null;
@@ -685,6 +690,19 @@ function Card({ children, style }) {
   );
 }
 
+// Pequeña leyenda de qué pestaña(s) del Google Sheet alimentan cada
+// gráfica/tabla — para que Andrei sepa a qué corregir si un número se ve mal.
+function SourceNote({ children }) {
+  return (
+    <div style={{ fontSize: 11, color: COLORS.muted, marginTop: 10, fontStyle: "italic" }}>
+      Fuente: {children}
+    </div>
+  );
+}
+const SOURCE_ZOHO = "Base ZOHO OPS 2026";
+const SOURCE_ADS = "Query-Meta + Query-Google";
+const SOURCE_BOTH = "Base ZOHO OPS 2026 + Query-Meta + Query-Google";
+
 // Etiqueta pequeña estilo "eyebrow" para encabezar cada sección de una vista.
 function SectionLabel({ children }) {
   return (
@@ -888,9 +906,9 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows }) {
 
   const sum = (rows, key) => rows.reduce((s, r) => s + (r[key] || 0), 0);
   const canales = [
-    { label: "Meta Ads", inversion: sum(metaRows, "cost"), resultado: sum(metaRows, "websiteLeads"), resultadoLabel: "Website leads" },
-    { label: "Google Search", inversion: sum(googleSearchRows, "cost"), resultado: sum(googleSearchRows, "conversions"), resultadoLabel: "Conversiones" },
-    { label: "Google YouTube", inversion: sum(googleYoutubeRows, "cost"), resultado: sum(googleYoutubeRows, "conversions"), resultadoLabel: "Conversiones" },
+    { label: "Meta Ads", inversion: sum(metaRows, "cost"), resultado: sum(metaRows, "websiteLeads"), resultadoLabel: "Registros landing" },
+    { label: "Google Search", inversion: sum(googleSearchRows, "cost"), resultado: sum(googleSearchRows, "conversions"), resultadoLabel: "Registros landing" },
+    { label: "Google YouTube", inversion: sum(googleYoutubeRows, "cost"), resultado: sum(googleYoutubeRows, "conversions"), resultadoLabel: "Suscriptores al Canal" },
     ...(googleOtrasRows.length
       ? [{ label: "Google (otras campañas)", inversion: sum(googleOtrasRows, "cost"), resultado: sum(googleOtrasRows, "conversions"), resultadoLabel: "Conversiones" }]
       : []),
@@ -938,9 +956,9 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows }) {
       <Card style={{ marginBottom: 20 }}>
         <SectionLabel>Inversión y resultados por canal</SectionLabel>
         <div style={{ color: COLORS.muted, fontSize: 12.5, marginBottom: 14 }}>
-          "Resultado" es la métrica que reporta cada plataforma publicitaria (Website leads en Meta,
-          Conversions en Google) — no es lo mismo que un lead real dado de alta en ZOHO, es la atribución
-          que hace la propia plataforma.
+          "Resultado" es la métrica que reporta cada plataforma publicitaria: Registros landing en Meta Ads
+          y Google Search, Suscriptores al Canal en Google YouTube — no es lo mismo que un lead real dado
+          de alta en ZOHO, es la atribución que hace la propia plataforma.
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
           <SimpleBarChart
@@ -1007,6 +1025,7 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows }) {
           </div>
         </div>
       </Card>
+      <SourceNote>{SOURCE_BOTH}</SourceNote>
     </div>
   );
 }
@@ -1105,6 +1124,7 @@ function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid, granularity
         ]}
         rows={[...rows].reverse()}
       />
+      <SourceNote>{SOURCE_BOTH}</SourceNote>
     </div>
   );
 }
@@ -1153,6 +1173,7 @@ function SemanaVsSemana({ weeklyAll }) {
           w3: m.fmt(w3?.[m.key]),
         }))}
       />
+      <SourceNote>{SOURCE_BOTH}</SourceNote>
     </div>
   );
 }
@@ -1229,6 +1250,7 @@ function SeguimientoFinal({ leads }) {
         rows={sfLeads}
         rowStyle={(r) => (r.dias !== null && r.dias === sfLeads[0]?.dias && r.dias > THRESHOLDS.diasSF.yellow ? { background: "#FBE7EB" } : {})}
       />
+      <SourceNote>{SOURCE_ZOHO}</SourceNote>
     </div>
   );
 }
@@ -1309,6 +1331,7 @@ function CampanasUtm({ leads }) {
           return {};
         }}
       />
+      <SourceNote>{SOURCE_ZOHO}</SourceNote>
     </div>
   );
 }
@@ -1387,6 +1410,7 @@ function OpsSeisSemanas({ weeklyAll, leads }) {
         ]}
         rows={actividad}
       />
+      <SourceNote>{SOURCE_ZOHO}</SourceNote>
     </div>
   );
 }
@@ -1438,6 +1462,7 @@ function CostosPorEtapa({ leads, investmentTotal }) {
         ]}
         rows={stages}
       />
+      <SourceNote>{SOURCE_BOTH}</SourceNote>
     </div>
   );
 }
@@ -1492,6 +1517,7 @@ function TotalVsRockin({ periodAll, periodPaid, periodLabel }) {
         ]}
         rows={[...rows].reverse()}
       />
+      <SourceNote>{SOURCE_BOTH}</SourceNote>
     </div>
   );
 }
@@ -1548,6 +1574,7 @@ function PipelineMensualFase({ leads, periodKey }) {
         ]}
         rows={rows}
       />
+      <SourceNote>{SOURCE_ZOHO}</SourceNote>
     </div>
   );
 }
@@ -1622,6 +1649,81 @@ function DateRangeFilter({ preset, onPresetChange, customStart, customEnd, onCus
         </div>
       </div>
     </Card>
+  );
+}
+
+/* -------------------------------------------------------------------------
+   MENÚ LATERAL
+   ------------------------------------------------------------------------- */
+
+const SIDEBAR_WIDTH = 240;
+
+function Sidebar({ tabs, activeTab, onTabChange, updatedLabel }) {
+  return (
+    <div
+      style={{
+        width: SIDEBAR_WIDTH,
+        minWidth: SIDEBAR_WIDTH,
+        background: COLORS.navyDeep,
+        minHeight: "100vh",
+        padding: "28px 18px",
+        display: "flex",
+        flexDirection: "column",
+        position: "sticky",
+        top: 0,
+        alignSelf: "flex-start",
+      }}
+    >
+      <div style={{ fontFamily: FONT_DISPLAY, fontSize: 22, fontWeight: 700, color: "#FFFFFF", lineHeight: 1.1 }}>
+        AltamiranoAnaya
+      </div>
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", marginTop: 4, marginBottom: 6 }}>
+        ActionCoach · Rockin
+      </div>
+      {updatedLabel && (
+        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginBottom: 24 }}>{updatedLabel}</div>
+      )}
+
+      <div
+        style={{
+          fontSize: 10.5,
+          textTransform: "uppercase",
+          letterSpacing: 0.8,
+          color: "rgba(255,255,255,0.4)",
+          fontWeight: 700,
+          marginBottom: 10,
+          marginTop: updatedLabel ? 0 : 24,
+        }}
+      >
+        Vistas
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {tabs.map((t) => {
+          const active = activeTab === t.key;
+          return (
+            <button
+              key={t.key}
+              onClick={() => onTabChange(t.key)}
+              style={{
+                textAlign: "left",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "none",
+                borderLeft: `3px solid ${active ? COLORS.crimson : "transparent"}`,
+                background: active ? "rgba(255,255,255,0.10)" : "transparent",
+                color: active ? "#FFFFFF" : "rgba(255,255,255,0.72)",
+                fontWeight: active ? 700 : 500,
+                fontSize: 13.5,
+                fontFamily: FONT_BODY,
+                cursor: "pointer",
+              }}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1740,113 +1842,116 @@ export default function App() {
     { key: "costos", label: "Costos por Etapa" },
     { key: "totalRockin", label: "Total vs Rockin" },
   ];
+  const activeTabLabel = TABS.find((t) => t.key === tab)?.label || "";
+  const updatedLabel = dataExtent
+    ? `Actualizado: ${dataExtent.max.toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}`
+    : null;
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: COLORS.bg,
-        color: COLORS.text,
-        fontFamily: FONT_BODY,
-        padding: "28px 24px 60px",
-      }}
-    >
-      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
-          <h1 style={{ fontFamily: FONT_DISPLAY, fontSize: 26, fontWeight: 700, margin: 0, color: COLORS.navyDeep }}>
-            Dashboard Comercial — Altamirano &amp; Anaya
-          </h1>
-          <span style={{ fontSize: 12, color: COLORS.muted }}>ActionCoach · gestionado por Rockin</span>
-        </div>
-        <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 22 }}>
-          Datos en vivo desde Google Sheets · Query-Meta · Query-Google · Base ZOHO OPS 2026
-        </div>
-
-        {status === "loading" && (
-          <div style={{ padding: 60, textAlign: "center", color: COLORS.muted }}>
-            Cargando datos desde Google Sheets…
-          </div>
-        )}
-
-        {status === "error" && (
-          <div
-            style={{
-              background: "#FBE7EB",
-              border: `1px solid ${COLORS.crimson}`,
-              borderRadius: 10,
-              padding: 20,
-              color: "#8A0F2C",
-              fontSize: 13,
-            }}
-          >
-            <strong>No se pudo cargar el dashboard.</strong>
-            <div style={{ marginTop: 8 }}>{errorMsg}</div>
-            <div style={{ marginTop: 8, color: COLORS.muted }}>
-              Verifica que el Google Sheet siga compartido como "Cualquier persona con el enlace puede ver/editar"
-              y que los nombres de las pestañas ("Query-Meta", "Query-Google", "Base ZOHO OPS 2026") no hayan
-              cambiado.
+    <div style={{ display: "flex", minHeight: "100vh", background: COLORS.bg, fontFamily: FONT_BODY }}>
+      {status === "ready" && (
+        <Sidebar tabs={TABS} activeTab={tab} onTabChange={setTab} updatedLabel={updatedLabel} />
+      )}
+      <div style={{ flex: 1, minWidth: 0, padding: "28px 32px 60px", color: COLORS.text }}>
+        <div style={{ maxWidth: 1100 }}>
+          {status === "ready" ? (
+            <div style={{ marginBottom: 4 }}>
+              <h1 style={{ fontFamily: FONT_DISPLAY, fontSize: 26, fontWeight: 700, margin: 0, color: COLORS.navyDeep }}>
+                {activeTabLabel}
+              </h1>
+              <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 2 }}>
+                Altamirano &amp; Anaya · ActionCoach · gestionado por Rockin
+              </div>
             </div>
-          </div>
-        )}
-
-        {status === "ready" && (
-          <>
-            <DateRangeFilter
-              preset={datePreset}
-              onPresetChange={(p) => {
-                if (p === "custom" && !customStart && !customEnd && rangeStart && rangeEnd) {
-                  setCustomStart(toInputDate(rangeStart));
-                  setCustomEnd(toInputDate(rangeEnd));
-                }
-                setDatePreset(p);
-              }}
-              customStart={customStart}
-              customEnd={customEnd}
-              onCustomChange={(s, e) => {
-                setCustomStart(s);
-                setCustomEnd(e);
-              }}
-              rangeStart={rangeStart}
-              rangeEnd={rangeEnd}
-              granularity={granularityAuto}
-            />
-
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 24 }}>
-              {TABS.map((t) => (
-                <TabButton key={t.key} active={tab === t.key} onClick={() => setTab(t.key)}>
-                  {t.label}
-                </TabButton>
-              ))}
+          ) : (
+            <div style={{ marginBottom: 4 }}>
+              <h1 style={{ fontFamily: FONT_DISPLAY, fontSize: 26, fontWeight: 700, margin: 0, color: COLORS.navyDeep }}>
+                Dashboard Comercial — Altamirano &amp; Anaya
+              </h1>
             </div>
+          )}
+          <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 22 }}>
+            Datos en vivo desde Google Sheets · Query-Meta · Query-Google · Base ZOHO OPS 2026
+          </div>
 
-            {tab === "resumen" && (
-              <ResumenEjecutivo
-                leads={filteredLeads}
-                investment={filteredInvestment}
-                investmentTotal={investmentTotal}
-                weeklyRows={weeklyAll}
+          {status === "loading" && (
+            <div style={{ padding: 60, textAlign: "center", color: COLORS.muted }}>
+              Cargando datos desde Google Sheets…
+            </div>
+          )}
+
+          {status === "error" && (
+            <div
+              style={{
+                background: "#FBE7EB",
+                border: `1px solid ${COLORS.crimson}`,
+                borderRadius: 10,
+                padding: 20,
+                color: "#8A0F2C",
+                fontSize: 13,
+              }}
+            >
+              <strong>No se pudo cargar el dashboard.</strong>
+              <div style={{ marginTop: 8 }}>{errorMsg}</div>
+              <div style={{ marginTop: 8, color: COLORS.muted }}>
+                Verifica que el Google Sheet siga compartido como "Cualquier persona con el enlace puede ver/editar"
+                y que los nombres de las pestañas ("Query-Meta", "Query-Google", "Base ZOHO OPS 2026") no hayan
+                cambiado.
+              </div>
+            </div>
+          )}
+
+          {status === "ready" && (
+            <>
+              <DateRangeFilter
+                preset={datePreset}
+                onPresetChange={(p) => {
+                  if (p === "custom" && !customStart && !customEnd && rangeStart && rangeEnd) {
+                    setCustomStart(toInputDate(rangeStart));
+                    setCustomEnd(toInputDate(rangeEnd));
+                  }
+                  setDatePreset(p);
+                }}
+                customStart={customStart}
+                customEnd={customEnd}
+                onCustomChange={(s, e) => {
+                  setCustomStart(s);
+                  setCustomEnd(e);
+                }}
+                rangeStart={rangeStart}
+                rangeEnd={rangeEnd}
+                granularity={granularityAuto}
               />
-            )}
-            {tab === "evolucion" && (
-              <Evolucion
-                monthlyAll={monthlyAll}
-                monthlyPaid={monthlyPaid}
-                weeklyAll={weeklyAll}
-                weeklyPaid={weeklyPaid}
-                granularityAuto={granularityAuto}
-              />
-            )}
-            {tab === "pipelineMensual" && <PipelineMensualFase leads={filteredLeads} periodKey={granularityAuto} />}
-            {tab === "semana" && <SemanaVsSemana weeklyAll={weeklyAll} />}
-            {tab === "ops6" && <OpsSeisSemanas weeklyAll={weeklyAll} leads={filteredLeads} />}
-            {tab === "sf" && <SeguimientoFinal leads={filteredLeads} />}
-            {tab === "utm" && <CampanasUtm leads={filteredLeads} />}
-            {tab === "costos" && <CostosPorEtapa leads={filteredLeads} investmentTotal={investmentTotal} />}
-            {tab === "totalRockin" && (
-              <TotalVsRockin periodAll={periodAllAuto} periodPaid={periodPaidAuto} periodLabel={periodLabelAuto} />
-            )}
-          </>
-        )}
+
+              {tab === "resumen" && (
+                <ResumenEjecutivo
+                  leads={filteredLeads}
+                  investment={filteredInvestment}
+                  investmentTotal={investmentTotal}
+                  weeklyRows={weeklyAll}
+                />
+              )}
+              {tab === "evolucion" && (
+                <Evolucion
+                  monthlyAll={monthlyAll}
+                  monthlyPaid={monthlyPaid}
+                  weeklyAll={weeklyAll}
+                  weeklyPaid={weeklyPaid}
+                  granularityAuto={granularityAuto}
+                />
+              )}
+              {tab === "pipelineMensual" && <PipelineMensualFase leads={filteredLeads} periodKey={granularityAuto} />}
+              {tab === "semana" && <SemanaVsSemana weeklyAll={weeklyAll} />}
+              {tab === "ops6" && <OpsSeisSemanas weeklyAll={weeklyAll} leads={filteredLeads} />}
+              {tab === "sf" && <SeguimientoFinal leads={filteredLeads} />}
+              {tab === "utm" && <CampanasUtm leads={filteredLeads} />}
+              {tab === "costos" && <CostosPorEtapa leads={filteredLeads} investmentTotal={investmentTotal} />}
+              {tab === "totalRockin" && (
+                <TotalVsRockin periodAll={periodAllAuto} periodPaid={periodPaidAuto} periodLabel={periodLabelAuto} />
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
