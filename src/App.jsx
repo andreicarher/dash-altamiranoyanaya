@@ -572,12 +572,45 @@ function Badge({ color, children }) {
   );
 }
 
-function KpiCard({ label, value, sub, color }) {
+// Chip de color con fondo tenue — más fácil de escanear en una tabla larga
+// que solo texto coloreado.
+const PILL_TINTS = {
+  [COLORS.green]: { bg: "#E7F5EC", fg: "#116B33" },
+  [COLORS.yellow]: { bg: "#FEF6E7", fg: "#8A5A07" },
+  [COLORS.red]: { bg: "#FBE7EB", fg: "#8A0F2C" },
+};
+function Pill({ color, children }) {
+  const tint = PILL_TINTS[color] || { bg: COLORS.bgCardAlt, fg: COLORS.text };
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        padding: "3px 10px",
+        borderRadius: 999,
+        background: tint.bg,
+        color: tint.fg,
+        fontWeight: 700,
+        fontSize: 12.5,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function KpiCard({ label, value, sub, color, highlight = false }) {
+  // Cuando la tarjeta trae un color de semáforo (rojo/ámbar/verde), se resalta
+  // con un acento lateral y un fondo tenue del mismo tono — así lo urgente
+  // salta a la vista sin tener que leer el número.
+  const isAlert = highlight && (color === COLORS.red || color === COLORS.crimson || color === COLORS.yellow);
+  const tint = color === COLORS.yellow ? "#FEF6E7" : "#FBE7EB";
   return (
     <div
       style={{
-        background: COLORS.bgCard,
-        border: `1px solid ${COLORS.border}`,
+        background: isAlert ? tint : COLORS.bgCard,
+        border: `1px solid ${isAlert ? color : COLORS.border}`,
+        borderLeft: `4px solid ${isAlert ? color : COLORS.navy}`,
         borderRadius: 10,
         padding: "18px 20px",
         flex: "1 1 180px",
@@ -640,6 +673,7 @@ function Card({ children, style }) {
       style={{
         background: COLORS.bgCard,
         border: `1px solid ${COLORS.border}`,
+        borderTop: `3px solid ${COLORS.navy}`,
         borderRadius: 10,
         padding: 20,
         boxShadow: "0 1px 3px rgba(33,29,29,0.06)",
@@ -764,7 +798,7 @@ function SimpleDonut({ data, height = 240 }) {
   );
 }
 
-function Table({ columns, rows }) {
+function Table({ columns, rows, rowStyle }) {
   return (
     <div style={{ overflowX: "auto", border: `1px solid ${COLORS.border}`, borderRadius: 10, background: COLORS.bgCard }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
@@ -793,7 +827,13 @@ function Table({ columns, rows }) {
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i} style={{ background: i % 2 === 0 ? "transparent" : COLORS.bgCardAlt }}>
+            <tr
+              key={i}
+              style={{
+                background: i % 2 === 0 ? "transparent" : COLORS.bgCardAlt,
+                ...(rowStyle ? rowStyle(row, i) : {}),
+              }}
+            >
               {columns.map((c) => (
                 <td
                   key={c.key}
@@ -883,12 +923,14 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows }) {
           value={fmtMoney(cplPagado)}
           color={semaforo("cplPagado", cplPagado)}
           sub="Inversión / leads de fuentes pagadas"
+          highlight
         />
         <KpiCard label="CPL general" value={fmtMoney(cplGeneral)} sub="Inversión / todos los leads" />
         <KpiCard
           label="Mini-COD rate"
           value={fmtPct(funnelAll.miniCodPct)}
           color={semaforo("miniCod", funnelAll.miniCodPct)}
+          highlight
         />
         <KpiCard label="Cierres (Programa Aceptado)" value={funnelAll.cierres.toLocaleString("es-MX")} />
       </div>
@@ -1043,19 +1085,13 @@ function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid, granularity
             key: "noContactadosPct",
             header: "NC%",
             align: "right",
-            render: (r) => (
-              <span style={{ color: semaforo("noContactado", r.noContactadosPct) }}>
-                {fmtPct(r.noContactadosPct)}
-              </span>
-            ),
+            render: (r) => <Pill color={semaforo("noContactado", r.noContactadosPct)}>{fmtPct(r.noContactadosPct)}</Pill>,
           },
           {
             key: "miniCodPct",
             header: "Mini-COD%",
             align: "right",
-            render: (r) => (
-              <span style={{ color: semaforo("miniCod", r.miniCodPct) }}>{fmtPct(r.miniCodPct)}</span>
-            ),
+            render: (r) => <Pill color={semaforo("miniCod", r.miniCodPct)}>{fmtPct(r.miniCodPct)}</Pill>,
           },
           { key: "codPct", header: "COD%", align: "right", render: (r) => fmtPct(r.codPct) },
           { key: "cierres", header: "Ace", align: "right" },
@@ -1063,9 +1099,7 @@ function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid, granularity
             key: "cplPagado",
             header: "CPL pagado",
             align: "right",
-            render: (r) => (
-              <span style={{ color: semaforo("cplPagado", r.cplPagado) }}>{fmtMoney(r.cplPagado)}</span>
-            ),
+            render: (r) => <Pill color={semaforo("cplPagado", r.cplPagado)}>{fmtMoney(r.cplPagado)}</Pill>,
           },
           { key: "cplGeneral", header: "CPL general", align: "right", render: (r) => fmtMoney(r.cplGeneral) },
         ]}
@@ -1147,10 +1181,10 @@ function SeguimientoFinal({ leads }) {
     <div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 20 }}>
         <KpiCard label="Activos en Seguimiento Final" value={sfLeads.length} />
-        <KpiCard label="Urgentes (>65 días)" value={urgentes} color={COLORS.red} />
-        <KpiCard label="En riesgo (35-65 días)" value={enRiesgo} color={COLORS.yellow} />
+        <KpiCard label="Urgentes (>65 días)" value={urgentes} color={COLORS.red} highlight={urgentes > 0} />
+        <KpiCard label="En riesgo (35-65 días)" value={enRiesgo} color={COLORS.yellow} highlight={enRiesgo > 0} />
         {conAdan > 0 && (
-          <KpiCard label="Asignados a Adán Cortés" value={conAdan} color={COLORS.red} sub="Requieren reasignación" />
+          <KpiCard label="Asignados a Adán Cortés" value={conAdan} color={COLORS.red} sub="Requieren reasignación" highlight />
         )}
       </div>
 
@@ -1175,7 +1209,7 @@ function SeguimientoFinal({ leads }) {
             key: "propietario",
             header: "Agente",
             render: (r) => (
-              <span style={{ color: r.esAdan ? COLORS.red : COLORS.text }}>
+              <span style={{ color: r.esAdan ? COLORS.red : COLORS.text, fontWeight: r.esAdan ? 700 : 400 }}>
                 {r.propietario} {r.esAdan && "⚠️"}
               </span>
             ),
@@ -1184,12 +1218,7 @@ function SeguimientoFinal({ leads }) {
             key: "dias",
             header: "Días en proceso",
             align: "right",
-            render: (r) => (
-              <span style={{ color: semaforo("diasSF", r.dias) }}>
-                <Badge color={semaforo("diasSF", r.dias)} />
-                {r.dias ?? "—"}
-              </span>
-            ),
+            render: (r) => <Pill color={semaforo("diasSF", r.dias)}>{r.dias ?? "—"} días</Pill>,
           },
           {
             key: "horaModificacion",
@@ -1198,6 +1227,7 @@ function SeguimientoFinal({ leads }) {
           },
         ]}
         rows={sfLeads}
+        rowStyle={(r) => (r.dias !== null && r.dias === sfLeads[0]?.dias && r.dias > THRESHOLDS.diasSF.yellow ? { background: "#FBE7EB" } : {})}
       />
     </div>
   );
@@ -1262,15 +1292,22 @@ function CampanasUtm({ leads }) {
             key: "miniCodPct",
             header: "Mini-COD%",
             align: "right",
-            render: (r) => (
-              <span style={{ color: semaforo("miniCod", r.miniCodPct) }}>{fmtPct(r.miniCodPct)}</span>
-            ),
+            render: (r) => <Pill color={semaforo("miniCod", r.miniCodPct)}>{fmtPct(r.miniCodPct)}</Pill>,
           },
           { key: "codPct", header: "COD%", align: "right", render: (r) => fmtPct(r.codPct) },
           { key: "rec", header: "Diagnóstico", align: "right" },
           { key: "convPct", header: "Conv%", align: "right", render: (r) => fmtPct(r.convPct) },
         ]}
         rows={rows}
+        rowStyle={(r) => {
+          // Solo resalta extremos con volumen mínimo (2+ leads), para no
+          // destacar campañas con 1 lead y 100%/0% que no son representativas.
+          const relevantes = rows.filter((x) => x.leads >= 2);
+          if (!relevantes.length) return {};
+          if (r === relevantes[0]) return { background: "#E7F5EC" };
+          if (r === relevantes[relevantes.length - 1] && relevantes.length > 1) return { background: "#FBE7EB" };
+          return {};
+        }}
       />
     </div>
   );
