@@ -1526,6 +1526,141 @@ function TotalVsRockin({ periodAll, periodPaid, periodLabel }) {
    VISTA 9: PIPELINE MENSUAL POR FASE
    ------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------
+   VISTA 10: META ADS — DESEMPEÑO EN VIVO (vía función serverless)
+   ------------------------------------------------------------------------- */
+
+function StatusPill({ label, kind }) {
+  const map = {
+    active: { bg: "#E7F5EC", fg: "#116B33" },
+    paused: { bg: COLORS.bgCardAlt, fg: COLORS.muted },
+    other: { bg: "#FEF6E7", fg: "#8A5A07" },
+    unknown: { bg: COLORS.bgCardAlt, fg: COLORS.muted },
+  };
+  const t = map[kind] || map.unknown;
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        padding: "3px 10px",
+        borderRadius: 999,
+        background: t.bg,
+        color: t.fg,
+        fontWeight: 700,
+        fontSize: 12,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function MetaAdsPerformance({ rangeStart, rangeEnd }) {
+  const [status, setStatus] = useState("loading");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [rows, setRows] = useState([]);
+
+  useEffect(() => {
+    if (!rangeStart || !rangeEnd) return;
+    let cancelled = false;
+    async function load() {
+      setStatus("loading");
+      try {
+        const url = `/api/meta-ads-performance?date_from=${toInputDate(rangeStart)}&date_to=${toInputDate(rangeEnd)}`;
+        const res = await fetch(url);
+        const json = await res.json();
+        if (cancelled) return;
+        if (!res.ok || json.error) {
+          throw new Error(json.error || `HTTP ${res.status}`);
+        }
+        setRows(json.rows || []);
+        setStatus("ready");
+      } catch (err) {
+        if (cancelled) return;
+        setErrorMsg(err.message || String(err));
+        setStatus("error");
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [rangeStart, rangeEnd]);
+
+  if (status === "loading") {
+    return <div style={{ padding: 40, textAlign: "center", color: COLORS.muted }}>Cargando desde Meta Ads…</div>;
+  }
+
+  if (status === "error") {
+    return (
+      <Card>
+        <div style={{ color: "#8A0F2C", fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
+          No se pudo cargar el desempeño de Meta Ads.
+        </div>
+        <div style={{ color: COLORS.muted, fontSize: 13 }}>{errorMsg}</div>
+        <div style={{ color: COLORS.muted, fontSize: 12, marginTop: 8 }}>
+          Verifica que META_ACCESS_TOKEN y META_AD_ACCOUNT_ID estén configurados en las variables de ambiente de
+          Vercel, y que el token del System User tenga permiso ads_read sobre esta cuenta.
+        </div>
+      </Card>
+    );
+  }
+
+  const totalInversion = rows.reduce((s, r) => s + r.spend, 0);
+  const totalResultados = rows.reduce((s, r) => s + r.resultado, 0);
+  const costoPromedio = totalResultados ? totalInversion / totalResultados : null;
+  const activos = rows.filter((r) => r.statusKind === "active").length;
+
+  return (
+    <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 20 }}>
+        <KpiCard label="Inversión (período)" value={fmtMoney(totalInversion)} />
+        <KpiCard label="Resultados" value={totalResultados.toLocaleString("es-MX")} sub="Leads reportados por Meta" />
+        <KpiCard label="Costo por resultado" value={fmtMoney(costoPromedio)} />
+        <KpiCard label="Anuncios activos" value={`${activos} / ${rows.length}`} />
+      </div>
+
+      <Table
+        columns={[
+          { key: "campaignName", header: "Campaña" },
+          { key: "adsetName", header: "Adset" },
+          { key: "adName", header: "Anuncio" },
+          {
+            key: "statusLabel",
+            header: "Estado",
+            render: (r) => <StatusPill label={r.statusLabel} kind={r.statusKind} />,
+          },
+          { key: "spend", header: "Inversión", align: "right", render: (r) => fmtMoney(r.spend) },
+          { key: "reach", header: "Alcance", align: "right", render: (r) => r.reach.toLocaleString("es-MX") },
+          {
+            key: "impressions",
+            header: "Impresiones",
+            align: "right",
+            render: (r) => r.impressions.toLocaleString("es-MX"),
+          },
+          { key: "frequency", header: "Frecuencia", align: "right", render: (r) => r.frequency.toFixed(2) },
+          {
+            key: "uniqueCtr",
+            header: "CTR único",
+            align: "right",
+            render: (r) => `${r.uniqueCtr.toFixed(2)}%`,
+          },
+          { key: "resultado", header: "Resultados", align: "right", render: (r) => r.resultado.toLocaleString("es-MX") },
+          {
+            key: "costoPorResultado",
+            header: "Costo/Resultado",
+            align: "right",
+            render: (r) => fmtMoney(r.costoPorResultado),
+          },
+        ]}
+        rows={rows}
+      />
+      <SourceNote>Meta Marketing API (en vivo, vía función serverless de Vercel)</SourceNote>
+    </div>
+  );
+}
+
 function PipelineMensualFase({ leads, periodKey }) {
   const { rows, columns } = computePipelinePorFase(leads, periodKey);
   const esMensual = periodKey === "mes";
@@ -1838,6 +1973,7 @@ export default function App() {
   const TABS = [
     { key: "resumen", label: "Resumen Ejecutivo" },
     { key: "evolucion", label: "Evolución" },
+    { key: "metaAds", label: "Meta Ads" },
     { key: "pipelineMensual", label: granularityAuto === "mes" ? "Pipeline Mensual" : "Pipeline Semanal" },
     { key: "semana", label: "Semana vs Semana" },
     { key: "ops6", label: "OPS 6 Semanas" },
@@ -1944,6 +2080,7 @@ export default function App() {
                   granularityAuto={granularityAuto}
                 />
               )}
+              {tab === "metaAds" && <MetaAdsPerformance rangeStart={rangeStart} rangeEnd={rangeEnd} />}
               {tab === "pipelineMensual" && <PipelineMensualFase leads={filteredLeads} periodKey={granularityAuto} />}
               {tab === "semana" && <SemanaVsSemana weeklyAll={weeklyAll} />}
               {tab === "ops6" && <OpsSeisSemanas weeklyAll={weeklyAll} leads={filteredLeads} />}
