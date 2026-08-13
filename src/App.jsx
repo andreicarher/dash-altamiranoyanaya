@@ -1248,7 +1248,8 @@ function SemanaVsSemana({ weeklyAll }) {
     <div>
       <div style={{ color: COLORS.muted, fontSize: 13, marginBottom: 14 }}>
         Comparando {w1?.label} (más reciente) vs {w2?.label} vs {w3?.label}. Se excluye la semana en curso
-        por estar incompleta.
+        por estar incompleta. Esta vista siempre mira las últimas semanas completas del histórico — no se
+        acota al filtro de fecha de arriba, para no cortar semanas a la mitad.
       </div>
       <Table
         columns={[
@@ -1441,6 +1442,10 @@ function OpsSeisSemanas({ weeklyAll, leads }) {
 
   return (
     <div>
+      <div style={{ color: COLORS.muted, fontSize: 12, marginBottom: 10 }}>
+        Siempre muestra las últimas 6 semanas del histórico completo — no se acota al filtro de fecha de
+        arriba, para no cortar semanas a la mitad.
+      </div>
       <SectionLabel>Cohorte — leads que ENTRARON cada semana y su avance</SectionLabel>
       <Card style={{ marginBottom: 16 }}>
         <SimpleBarChart
@@ -2204,6 +2209,14 @@ export default function App() {
     [filteredLeads, filteredInvestment]
   );
 
+  // "Semana vs Semana" y "OPS 6 Semanas" necesitan mirar semanas COMPLETAS
+  // hacia atrás para poder comparar — si el filtro global de fecha es corto
+  // (Hoy, Ayer, Mes actual a inicios de mes, etc.), recortaría las semanas
+  // de los bordes y rompería la comparación. Por eso estas dos vistas usan
+  // siempre el histórico completo (leads/investment sin acotar al filtro),
+  // en vez de filteredLeads/filteredInvestment.
+  const weeklyAllFull = useMemo(() => buildPeriodTable(leads, investment, "semana"), [leads, investment]);
+
   // Vistas que alternan mes/semana según la granularidad automática.
   const periodAllAuto = granularityAuto === "mes" ? monthlyAll : weeklyAll;
   const periodPaidAuto = granularityAuto === "mes" ? monthlyPaid : weeklyPaid;
@@ -2331,8 +2344,8 @@ export default function App() {
                 />
               )}
               {tab === "pipelineMensual" && <PipelineMensualFase leads={filteredLeads} periodKey={granularityAuto} />}
-              {tab === "semana" && <SemanaVsSemana weeklyAll={weeklyAll} />}
-              {tab === "ops6" && <OpsSeisSemanas weeklyAll={weeklyAll} leads={filteredLeads} />}
+              {tab === "semana" && <SemanaVsSemana weeklyAll={weeklyAllFull} />}
+              {tab === "ops6" && <OpsSeisSemanas weeklyAll={weeklyAllFull} leads={leads} />}
               {tab === "sf" && <SeguimientoFinal leads={filteredLeads} />}
               {tab === "utm" && <CampanasUtm leads={filteredLeads} />}
               {tab === "costos" && <CostosPorEtapa leads={filteredLeads} investmentTotal={investmentTotal} />}
