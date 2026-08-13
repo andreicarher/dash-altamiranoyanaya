@@ -604,7 +604,7 @@ function Pill({ color, children }) {
   );
 }
 
-function KpiCard({ label, value, sub, color, highlight = false }) {
+function KpiCard({ label, value, sub, color, highlight = false, delta = null }) {
   // Cuando la tarjeta trae un color de semáforo (rojo/ámbar/verde), se resalta
   // con un acento lateral y un fondo tenue del mismo tono — así lo urgente
   // salta a la vista sin tener que leer el número.
@@ -630,23 +630,39 @@ function KpiCard({ label, value, sub, color, highlight = false }) {
         {value}
       </div>
       {sub && <div style={{ fontSize: 12.5, color: COLORS.muted, marginTop: 4 }}>{sub}</div>}
+      {delta}
     </div>
   );
 }
 
 function Delta({ current, previous, invert = false }) {
-  if (previous === null || previous === undefined || previous === 0 || current === null) {
+  if (previous === null || previous === undefined || previous === 0 || current === null || current === undefined) {
     return <span style={{ color: COLORS.muted }}>—</span>;
   }
   const diff = current - previous;
   const pct = (diff / Math.abs(previous)) * 100;
   const isGood = invert ? diff < 0 : diff > 0;
   const color = diff === 0 ? COLORS.muted : isGood ? COLORS.green : COLORS.red;
-  const arrow = diff === 0 ? "▬" : diff > 0 ? "▲" : "▼";
+  const arrow = diff === 0 ? "→" : diff > 0 ? "↑" : "↓";
   return (
     <span style={{ color, fontWeight: 600, fontSize: 12 }}>
-      {arrow} {Math.abs(pct).toFixed(1)}%
+      {arrow} {Math.abs(pct).toFixed(0)}%
     </span>
+  );
+}
+
+// Línea de delta pensada para ir debajo de un KpiCard, comparando contra el
+// período anterior equivalente (mismo número de días, inmediatamente antes).
+// Formato "↑ 123% vs periodo anterior" — igual al patrón de referencia.
+function KpiDelta({ current, previous, invert = false }) {
+  if (previous === null || previous === undefined) {
+    return null;
+  }
+  return (
+    <div style={{ marginTop: 6, fontSize: 12 }}>
+      <Delta current={current} previous={previous} invert={invert} />
+      <span style={{ color: COLORS.muted, marginLeft: 6 }}>vs periodo anterior</span>
+    </div>
   );
 }
 
@@ -885,12 +901,22 @@ function Table({ columns, rows, rowStyle }) {
    VISTA 1: RESUMEN EJECUTIVO
    ------------------------------------------------------------------------- */
 
-function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows }) {
+function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prevLeads, prevInvestmentTotal, hasPrevPeriod }) {
   const paidLeads = leads.filter((l) => l.paid);
   const funnelAll = computeFunnel(leads);
   const funnelPaid = computeFunnel(paidLeads);
   const cplPagado = funnelPaid.total ? investmentTotal / funnelPaid.total : null;
   const cplGeneral = funnelAll.total ? investmentTotal / funnelAll.total : null;
+
+  // Mismas métricas, pero para el período anterior equivalente — para poder
+  // mostrar el delta (▲▼) debajo de cada tarjeta. Si no hay período anterior
+  // (p. ej. filtro "Todo"), estos quedan en null y el delta simplemente no
+  // se muestra.
+  const prevPaidLeads = (prevLeads || []).filter((l) => l.paid);
+  const prevFunnelAll = hasPrevPeriod ? computeFunnel(prevLeads) : null;
+  const prevFunnelPaid = hasPrevPeriod ? computeFunnel(prevPaidLeads) : null;
+  const prevCplPagado = hasPrevPeriod && prevFunnelPaid.total ? prevInvestmentTotal / prevFunnelPaid.total : null;
+  const prevCplGeneral = hasPrevPeriod && prevFunnelAll.total ? prevInvestmentTotal / prevFunnelAll.total : null;
 
   const last2 = weeklyRows.slice(-2);
   const alertaNC =
@@ -934,23 +960,60 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows }) {
       )}
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 24 }}>
-        <KpiCard label="Leads pagados (período)" value={funnelPaid.total.toLocaleString("es-MX")} />
-        <KpiCard label="Inversión total" value={fmtMoney(investmentTotal)} />
+        <KpiCard
+          label="Leads pagados (período)"
+          value={funnelPaid.total.toLocaleString("es-MX")}
+          delta={
+            <KpiDelta
+              current={funnelPaid.total}
+              previous={hasPrevPeriod ? prevFunnelPaid.total : null}
+              fmtAbs={(v) => v.toLocaleString("es-MX")}
+            />
+          }
+        />
+        <KpiCard
+          label="Inversión total"
+          value={fmtMoney(investmentTotal)}
+          delta={<KpiDelta current={investmentTotal} previous={hasPrevPeriod ? prevInvestmentTotal : null} fmtAbs={fmtMoney} />}
+        />
         <KpiCard
           label="CPL pagado"
           value={fmtMoney(cplPagado)}
           color={semaforo("cplPagado", cplPagado)}
           sub="Inversión / leads de fuentes pagadas"
           highlight
+          delta={<KpiDelta current={cplPagado} previous={prevCplPagado} invert fmtAbs={fmtMoney} />}
         />
-        <KpiCard label="CPL general" value={fmtMoney(cplGeneral)} sub="Inversión / todos los leads" />
+        <KpiCard
+          label="CPL general"
+          value={fmtMoney(cplGeneral)}
+          sub="Inversión / todos los leads"
+          delta={<KpiDelta current={cplGeneral} previous={prevCplGeneral} invert fmtAbs={fmtMoney} />}
+        />
         <KpiCard
           label="Mini-COD rate"
           value={fmtPct(funnelAll.miniCodPct)}
           color={semaforo("miniCod", funnelAll.miniCodPct)}
           highlight
+          delta={
+            <KpiDelta
+              current={funnelAll.miniCodPct}
+              previous={hasPrevPeriod ? prevFunnelAll.miniCodPct : null}
+              fmtAbs={(v) => `${v.toFixed(1)} pts`}
+            />
+          }
         />
-        <KpiCard label="Cierres (Programa Aceptado)" value={funnelAll.cierres.toLocaleString("es-MX")} />
+        <KpiCard
+          label="Cierres (Programa Aceptado)"
+          value={funnelAll.cierres.toLocaleString("es-MX")}
+          delta={
+            <KpiDelta
+              current={funnelAll.cierres}
+              previous={hasPrevPeriod ? prevFunnelAll.cierres : null}
+              fmtAbs={(v) => v.toLocaleString("es-MX")}
+            />
+          }
+        />
       </div>
 
       <Card style={{ marginBottom: 20 }}>
@@ -1099,18 +1162,42 @@ function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid, granularity
       <Table
         columns={[
           { key: "label", header: "Período" },
-          { key: "leadsTotal", header: "Leads", align: "right" },
+          {
+            key: "leadsTotal",
+            header: "Leads",
+            align: "right",
+            render: (r) => (
+              <div>
+                {r.leadsTotal}
+                {r._prev && <KpiDelta current={r.leadsTotal} previous={r._prev.leadsTotal} fmtAbs={(v) => v} />}
+              </div>
+            ),
+          },
           {
             key: "noContactadosPct",
             header: "NC%",
             align: "right",
-            render: (r) => <Pill color={semaforo("noContactado", r.noContactadosPct)}>{fmtPct(r.noContactadosPct)}</Pill>,
+            render: (r) => (
+              <div>
+                <Pill color={semaforo("noContactado", r.noContactadosPct)}>{fmtPct(r.noContactadosPct)}</Pill>
+                {r._prev && (
+                  <KpiDelta current={r.noContactadosPct} previous={r._prev.noContactadosPct} invert fmtAbs={(v) => `${v.toFixed(1)}pts`} />
+                )}
+              </div>
+            ),
           },
           {
             key: "miniCodPct",
             header: "Mini-COD%",
             align: "right",
-            render: (r) => <Pill color={semaforo("miniCod", r.miniCodPct)}>{fmtPct(r.miniCodPct)}</Pill>,
+            render: (r) => (
+              <div>
+                <Pill color={semaforo("miniCod", r.miniCodPct)}>{fmtPct(r.miniCodPct)}</Pill>
+                {r._prev && (
+                  <KpiDelta current={r.miniCodPct} previous={r._prev.miniCodPct} fmtAbs={(v) => `${v.toFixed(1)}pts`} />
+                )}
+              </div>
+            ),
           },
           { key: "codPct", header: "COD%", align: "right", render: (r) => fmtPct(r.codPct) },
           { key: "cierres", header: "Ace", align: "right" },
@@ -1118,12 +1205,20 @@ function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid, granularity
             key: "cplPagado",
             header: "CPL pagado",
             align: "right",
-            render: (r) => <Pill color={semaforo("cplPagado", r.cplPagado)}>{fmtMoney(r.cplPagado)}</Pill>,
+            render: (r) => (
+              <div>
+                <Pill color={semaforo("cplPagado", r.cplPagado)}>{fmtMoney(r.cplPagado)}</Pill>
+                {r._prev && <KpiDelta current={r.cplPagado} previous={r._prev.cplPagado} invert fmtAbs={fmtMoney} />}
+              </div>
+            ),
           },
           { key: "cplGeneral", header: "CPL general", align: "right", render: (r) => fmtMoney(r.cplGeneral) },
         ]}
-        rows={[...rows].reverse()}
+        rows={[...rows].reverse().map((r, i, arr) => ({ ...r, _prev: arr[i + 1] || null }))}
       />
+      <div style={{ fontSize: 11.5, color: COLORS.muted, marginTop: 6 }}>
+        Los deltas (▲▼) comparan cada fila contra el período inmediatamente anterior en esta misma tabla.
+      </div>
       <SourceNote>{SOURCE_BOTH}</SourceNote>
     </div>
   );
@@ -1556,25 +1651,32 @@ function StatusPill({ label, kind }) {
   );
 }
 
-function MetaAdsPerformance({ rangeStart, rangeEnd }) {
+function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd }) {
   const [status, setStatus] = useState("loading");
   const [errorMsg, setErrorMsg] = useState("");
   const [rows, setRows] = useState([]);
+  const [prevRows, setPrevRows] = useState(null);
 
   useEffect(() => {
     if (!rangeStart || !rangeEnd) return;
     let cancelled = false;
+    async function fetchRange(start, end) {
+      const url = `/api/meta-ads-performance?date_from=${toInputDate(start)}&date_to=${toInputDate(end)}`;
+      const res = await fetch(url);
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || `HTTP ${res.status}`);
+      return json.rows || [];
+    }
     async function load() {
       setStatus("loading");
       try {
-        const url = `/api/meta-ads-performance?date_from=${toInputDate(rangeStart)}&date_to=${toInputDate(rangeEnd)}`;
-        const res = await fetch(url);
-        const json = await res.json();
+        const [currentRows, previousRows] = await Promise.all([
+          fetchRange(rangeStart, rangeEnd),
+          prevRangeStart ? fetchRange(prevRangeStart, prevRangeEnd) : Promise.resolve(null),
+        ]);
         if (cancelled) return;
-        if (!res.ok || json.error) {
-          throw new Error(json.error || `HTTP ${res.status}`);
-        }
-        setRows(json.rows || []);
+        setRows(currentRows);
+        setPrevRows(previousRows);
         setStatus("ready");
       } catch (err) {
         if (cancelled) return;
@@ -1586,7 +1688,7 @@ function MetaAdsPerformance({ rangeStart, rangeEnd }) {
     return () => {
       cancelled = true;
     };
-  }, [rangeStart, rangeEnd]);
+  }, [rangeStart, rangeEnd, prevRangeStart, prevRangeEnd]);
 
   if (status === "loading") {
     return <div style={{ padding: 40, textAlign: "center", color: COLORS.muted }}>Cargando desde Meta Ads…</div>;
@@ -1612,12 +1714,29 @@ function MetaAdsPerformance({ rangeStart, rangeEnd }) {
   const costoPromedio = totalResultados ? totalInversion / totalResultados : null;
   const activos = rows.filter((r) => r.statusKind === "active").length;
 
+  const prevInversion = prevRows ? prevRows.reduce((s, r) => s + r.spend, 0) : null;
+  const prevResultados = prevRows ? prevRows.reduce((s, r) => s + r.resultado, 0) : null;
+  const prevCosto = prevRows && prevResultados ? prevInversion / prevResultados : null;
+
   return (
     <div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 20 }}>
-        <KpiCard label="Inversión (período)" value={fmtMoney(totalInversion)} />
-        <KpiCard label="Resultados" value={totalResultados.toLocaleString("es-MX")} sub="Leads reportados por Meta" />
-        <KpiCard label="Costo por resultado" value={fmtMoney(costoPromedio)} />
+        <KpiCard
+          label="Inversión (período)"
+          value={fmtMoney(totalInversion)}
+          delta={<KpiDelta current={totalInversion} previous={prevInversion} fmtAbs={fmtMoney} />}
+        />
+        <KpiCard
+          label="Resultados"
+          value={totalResultados.toLocaleString("es-MX")}
+          sub="Leads reportados por Meta"
+          delta={<KpiDelta current={totalResultados} previous={prevResultados} fmtAbs={(v) => v.toLocaleString("es-MX")} />}
+        />
+        <KpiCard
+          label="Costo por resultado"
+          value={fmtMoney(costoPromedio)}
+          delta={<KpiDelta current={costoPromedio} previous={prevCosto} invert fmtAbs={fmtMoney} />}
+        />
         <KpiCard label="Anuncios activos" value={`${activos} / ${rows.length}`} />
       </div>
 
@@ -1719,11 +1838,15 @@ function PipelineMensualFase({ leads, periodKey }) {
    ------------------------------------------------------------------------- */
 
 const DATE_PRESETS = [
+  { key: "today", label: "Hoy" },
+  { key: "yesterday", label: "Ayer" },
+  { key: "7d", label: "Últimos 7 días" },
+  { key: "14d", label: "Últimos 14 días" },
   { key: "30d", label: "Últimos 30 días" },
-  { key: "90d", label: "Últimos 3 meses" },
-  { key: "180d", label: "Últimos 6 meses" },
-  { key: "all", label: "Todo" },
-  { key: "custom", label: "Personalizado" },
+  { key: "lastMonth", label: "Mes pasado" },
+  { key: "thisMonth", label: "Mes actual" },
+  { key: "all", label: "Todo el histórico" },
+  { key: "custom", label: "Personalizado…" },
 ];
 
 function toInputDate(d) {
@@ -1733,16 +1856,93 @@ function toInputDate(d) {
 }
 
 function DateRangeFilter({ preset, onPresetChange, customStart, customEnd, onCustomChange, rangeStart, rangeEnd, granularity }) {
+  const [open, setOpen] = useState(false);
+  const currentLabel = DATE_PRESETS.find((p) => p.key === preset)?.label || "Seleccionar período";
+
   return (
-    <Card style={{ marginBottom: 20 }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-        {DATE_PRESETS.map((p) => (
-          <TabButton key={p.key} active={preset === p.key} onClick={() => onPresetChange(p.key)}>
-            {p.label}
-          </TabButton>
-        ))}
+    <Card style={{ marginBottom: 20, position: "relative", overflow: "visible" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center" }}>
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={() => setOpen((o) => !o)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "10px 16px",
+              borderRadius: 8,
+              border: `1px solid ${COLORS.border}`,
+              background: "#FFFFFF",
+              color: COLORS.navyDeep,
+              fontWeight: 700,
+              fontSize: 13.5,
+              fontFamily: FONT_BODY,
+              cursor: "pointer",
+              minWidth: 200,
+              justifyContent: "space-between",
+            }}
+          >
+            {currentLabel}
+            <span style={{ color: COLORS.muted, fontSize: 11 }}>▾</span>
+          </button>
+
+          {open && (
+            <>
+              <div
+                onClick={() => setOpen(false)}
+                style={{ position: "fixed", inset: 0, zIndex: 15, background: "transparent" }}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 6px)",
+                  left: 0,
+                  zIndex: 20,
+                  background: "#FFFFFF",
+                  border: `1px solid ${COLORS.border}`,
+                  borderRadius: 10,
+                  boxShadow: "0 10px 30px rgba(33,29,29,0.18)",
+                  minWidth: 220,
+                  padding: 6,
+                }}
+              >
+                {DATE_PRESETS.map((p) => (
+                  <div
+                    key={p.key}
+                    onClick={() => {
+                      onPresetChange(p.key);
+                      setOpen(false);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "9px 12px",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                      background: preset === p.key ? "rgba(36,81,147,0.08)" : "transparent",
+                      fontSize: 13.5,
+                      color: COLORS.text,
+                      fontFamily: FONT_BODY,
+                    }}
+                    onMouseEnter={(e) => {
+                      if (preset !== p.key) e.currentTarget.style.background = COLORS.bgCardAlt;
+                    }}
+                    onMouseLeave={(e) => {
+                      if (preset !== p.key) e.currentTarget.style.background = "transparent";
+                    }}
+                  >
+                    <span>{p.label}</span>
+                    {preset === p.key && <span style={{ color: COLORS.navy, fontWeight: 700 }}>✓</span>}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
         {preset === "custom" && (
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: 4 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
               type="date"
               value={customStart}
@@ -1772,6 +1972,7 @@ function DateRangeFilter({ preset, onPresetChange, customStart, customEnd, onCus
             />
           </div>
         )}
+
         <div style={{ marginLeft: "auto", fontSize: 12.5, color: COLORS.muted, textAlign: "right" }}>
           {rangeStart && rangeEnd && (
             <>
@@ -1926,21 +2127,48 @@ export default function App() {
 
   const { rangeStart, rangeEnd, granularityAuto } = useMemo(() => {
     if (!dataExtent) return { rangeStart: null, rangeEnd: null, granularityAuto: "mes" };
-    let end = new Date(dataExtent.max.getFullYear(), dataExtent.max.getMonth(), dataExtent.max.getDate(), 23, 59, 59);
+    // "Hoy"/"ayer" se anclan al día más reciente que SÍ tiene datos (no al
+    // reloj real), para que nunca muestren una ventana vacía si el Sheet
+    // todavía no se actualiza con el día calendario actual.
+    const anchorDay = new Date(dataExtent.max.getFullYear(), dataExtent.max.getMonth(), dataExtent.max.getDate());
+    let end = new Date(anchorDay.getFullYear(), anchorDay.getMonth(), anchorDay.getDate(), 23, 59, 59);
     let start;
-    if (datePreset === "custom" && customStart && customEnd) {
+    if (datePreset === "today") {
+      start = new Date(anchorDay.getFullYear(), anchorDay.getMonth(), anchorDay.getDate(), 0, 0, 0);
+    } else if (datePreset === "yesterday") {
+      const y = new Date(anchorDay.getTime() - 86400000);
+      start = new Date(y.getFullYear(), y.getMonth(), y.getDate(), 0, 0, 0);
+      end = new Date(y.getFullYear(), y.getMonth(), y.getDate(), 23, 59, 59);
+    } else if (datePreset === "thisMonth") {
+      start = new Date(anchorDay.getFullYear(), anchorDay.getMonth(), 1, 0, 0, 0);
+    } else if (datePreset === "lastMonth") {
+      const lm = new Date(anchorDay.getFullYear(), anchorDay.getMonth() - 1, 1);
+      start = new Date(lm.getFullYear(), lm.getMonth(), 1, 0, 0, 0);
+      end = new Date(lm.getFullYear(), lm.getMonth() + 1, 0, 23, 59, 59); // último día de ese mes
+    } else if (datePreset === "custom" && customStart && customEnd) {
       start = new Date(customStart + "T00:00:00");
       end = new Date(customEnd + "T23:59:59");
     } else if (datePreset === "all") {
       start = dataExtent.min;
     } else {
-      const days = { "30d": 30, "90d": 90, "180d": 180 }[datePreset] || 30;
+      const days = { "7d": 7, "14d": 14, "30d": 30 }[datePreset] || 30;
       start = new Date(end.getTime() - (days - 1) * 86400000);
       if (start < dataExtent.min) start = dataExtent.min;
     }
     const spanDays = Math.max(1, Math.round((end - start) / 86400000) + 1);
     return { rangeStart: start, rangeEnd: end, granularityAuto: spanDays > 30 ? "mes" : "semana" };
   }, [datePreset, customStart, customEnd, dataExtent]);
+
+  // Período anterior: mismo número de días, inmediatamente antes del rango
+  // seleccionado. Se usa para calcular los deltas (▲▼) de tarjetas y tablas.
+  // "Todo" no tiene período anterior (no hay más historia hacia atrás).
+  const { prevRangeStart, prevRangeEnd } = useMemo(() => {
+    if (!rangeStart || !rangeEnd || datePreset === "all") return { prevRangeStart: null, prevRangeEnd: null };
+    const spanMs = rangeEnd.getTime() - rangeStart.getTime();
+    const prevEnd = new Date(rangeStart.getTime() - 1000); // 1 seg antes del inicio actual
+    const prevStart = new Date(prevEnd.getTime() - spanMs);
+    return { prevRangeStart: prevStart, prevRangeEnd: prevEnd };
+  }, [rangeStart, rangeEnd, datePreset]);
 
   const filteredLeads = useMemo(() => {
     if (!rangeStart) return leads;
@@ -1952,7 +2180,18 @@ export default function App() {
     return investment.filter((r) => r.date && r.date >= rangeStart && r.date <= rangeEnd);
   }, [investment, rangeStart, rangeEnd]);
 
+  const prevLeads = useMemo(() => {
+    if (!prevRangeStart) return [];
+    return leads.filter((l) => l.horaCreacion && l.horaCreacion >= prevRangeStart && l.horaCreacion <= prevRangeEnd);
+  }, [leads, prevRangeStart, prevRangeEnd]);
+
+  const prevInvestment = useMemo(() => {
+    if (!prevRangeStart) return [];
+    return investment.filter((r) => r.date && r.date >= prevRangeStart && r.date <= prevRangeEnd);
+  }, [investment, prevRangeStart, prevRangeEnd]);
+
   const investmentTotal = useMemo(() => filteredInvestment.reduce((s, r) => s + r.cost, 0), [filteredInvestment]);
+  const prevInvestmentTotal = useMemo(() => prevInvestment.reduce((s, r) => s + r.cost, 0), [prevInvestment]);
 
   const monthlyAll = useMemo(() => buildPeriodTable(filteredLeads, filteredInvestment, "mes"), [filteredLeads, filteredInvestment]);
   const monthlyPaid = useMemo(
@@ -2069,6 +2308,9 @@ export default function App() {
                   investment={filteredInvestment}
                   investmentTotal={investmentTotal}
                   weeklyRows={weeklyAll}
+                  prevLeads={prevLeads}
+                  prevInvestmentTotal={prevInvestmentTotal}
+                  hasPrevPeriod={!!prevRangeStart}
                 />
               )}
               {tab === "evolucion" && (
@@ -2080,7 +2322,14 @@ export default function App() {
                   granularityAuto={granularityAuto}
                 />
               )}
-              {tab === "metaAds" && <MetaAdsPerformance rangeStart={rangeStart} rangeEnd={rangeEnd} />}
+              {tab === "metaAds" && (
+                <MetaAdsPerformance
+                  rangeStart={rangeStart}
+                  rangeEnd={rangeEnd}
+                  prevRangeStart={prevRangeStart}
+                  prevRangeEnd={prevRangeEnd}
+                />
+              )}
               {tab === "pipelineMensual" && <PipelineMensualFase leads={filteredLeads} periodKey={granularityAuto} />}
               {tab === "semana" && <SemanaVsSemana weeklyAll={weeklyAll} />}
               {tab === "ops6" && <OpsSeisSemanas weeklyAll={weeklyAll} leads={filteredLeads} />}
