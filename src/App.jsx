@@ -2422,10 +2422,12 @@ export default function App() {
 
   const { rangeStart, rangeEnd, granularityAuto } = useMemo(() => {
     if (!dataExtent) return { rangeStart: null, rangeEnd: null, granularityAuto: "mes" };
-    // "Hoy"/"ayer" se anclan al día más reciente que SÍ tiene datos (no al
-    // reloj real), para que nunca muestren una ventana vacía si el Sheet
-    // todavía no se actualiza con el día calendario actual.
-    const anchorDay = new Date(dataExtent.max.getFullYear(), dataExtent.max.getMonth(), dataExtent.max.getDate());
+    // "Hoy" es el día calendario REAL de hoy (no el último dato cargado) —
+    // así "Mes actual" siempre corre hasta hoy, aunque el Sheet de ZOHO no
+    // se haya actualizado todavía con los últimos días. Los días sin datos
+    // simplemente se ven en cero, en vez de recortar la ventana en silencio.
+    const realToday = new Date();
+    const anchorDay = new Date(realToday.getFullYear(), realToday.getMonth(), realToday.getDate());
     let end = new Date(anchorDay.getFullYear(), anchorDay.getMonth(), anchorDay.getDate(), 23, 59, 59);
     let start;
     if (datePreset === "today") {
