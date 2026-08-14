@@ -1668,21 +1668,28 @@ function normalizeForMatch(s) {
 }
 function countZohoMatches(leads, needle, field) {
   const n = normalizeForMatch(needle);
-  if (!n) return { leads: 0, cierres: 0 };
+  const empty = { leads: 0, miniCod: 0, cod: 0, seguimientoFinal: 0, cierres: 0 };
+  if (!n) return empty;
   let leadsCount = 0;
+  let miniCod = 0;
+  let cod = 0;
+  let seguimientoFinal = 0;
   let cierres = 0;
   for (const l of leads) {
     if (!l.paid) continue;
     const hay = normalizeForMatch(field === "campania" ? l.campania : l.utmContent);
     if (hay && hay.includes(n)) {
       leadsCount++;
+      if (l.reachedMiniCod) miniCod++;
+      if (l.reachedCod) cod++;
+      if (l.seguimientoFinal) seguimientoFinal++;
       if (l.programaAceptado) cierres++;
     }
   }
-  return { leads: leadsCount, cierres };
+  return { leads: leadsCount, miniCod, cod, seguimientoFinal, cierres };
 }
 
-function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd, leads }) {
+function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd, leads, prevLeads }) {
   const [status, setStatus] = useState("loading");
   const [errorMsg, setErrorMsg] = useState("");
   const [rows, setRows] = useState([]);
@@ -1769,50 +1776,55 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
     return true;
   });
 
-  // Agrupación por Adset, cruzada contra utm_campaign de ZOHO.
-  const adsetGroups = {};
-  for (const r of filteredRows) {
-    const key = r.adsetId || r.adsetName;
-    if (!adsetGroups[key]) {
-      adsetGroups[key] = { campaignName: r.campaignName, adsetName: r.adsetName, spend: 0, resultado: 0 };
+  // Agrupación por Adset, cruzada contra utm_campaign de ZOHO — y la misma
+  // agrupación para el período anterior (con prevRows/prevLeads), para poder
+  // mostrar el delta debajo de cada métrica clave.
+  function groupAndCross(sourceRows, sourceLeads, keyField, nameField, zohoField) {
+    const groups = {};
+    for (const r of sourceRows || []) {
+      const key = r[keyField] || r[nameField];
+      if (!groups[key]) {
+        groups[key] = {
+          campaignName: r.campaignName,
+          adsetName: r.adsetName,
+          adName: r.adName,
+          spend: 0,
+          resultado: 0,
+        };
+      }
+      groups[key].spend += r.spend;
+      groups[key].resultado += r.resultado;
     }
-    adsetGroups[key].spend += r.spend;
-    adsetGroups[key].resultado += r.resultado;
-  }
-  const adsetRows = Object.values(adsetGroups)
-    .map((g) => {
-      const zoho = countZohoMatches(leads, g.adsetName, "campania");
-      return {
+    const out = {};
+    for (const key in groups) {
+      const g = groups[key];
+      const zoho = countZohoMatches(sourceLeads || [], g[nameField], zohoField);
+      out[key] = {
         ...g,
         costoPorResultado: g.resultado ? g.spend / g.resultado : null,
         leadsZoho: zoho.leads,
+        miniCodZoho: zoho.miniCod,
+        codZoho: zoho.cod,
+        sfZoho: zoho.seguimientoFinal,
         cierresZoho: zoho.cierres,
         cplZoho: zoho.leads ? g.spend / zoho.leads : null,
+        miniCodPct: zoho.leads ? (zoho.miniCod / zoho.leads) * 100 : null,
+        codPct: zoho.leads ? (zoho.cod / zoho.leads) * 100 : null,
       };
-    })
+    }
+    return out;
+  }
+
+  const adsetCurrent = groupAndCross(filteredRows, leads, "adsetId", "adsetName", "campania");
+  const adsetPrev = prevRows ? groupAndCross(prevRows, prevLeads, "adsetId", "adsetName", "campania") : {};
+  const adsetRows = Object.entries(adsetCurrent)
+    .map(([key, g]) => ({ ...g, _prev: adsetPrev[key] || null }))
     .sort((a, b) => b.leadsZoho - a.leadsZoho || b.spend - a.spend);
 
-  // Agrupación por Anuncio, cruzada contra utm_content de ZOHO.
-  const adGroups = {};
-  for (const r of filteredRows) {
-    const key = r.adId || r.adName;
-    if (!adGroups[key]) {
-      adGroups[key] = { campaignName: r.campaignName, adsetName: r.adsetName, adName: r.adName, spend: 0, resultado: 0 };
-    }
-    adGroups[key].spend += r.spend;
-    adGroups[key].resultado += r.resultado;
-  }
-  const adRows = Object.values(adGroups)
-    .map((g) => {
-      const zoho = countZohoMatches(leads, g.adName, "utmContent");
-      return {
-        ...g,
-        costoPorResultado: g.resultado ? g.spend / g.resultado : null,
-        leadsZoho: zoho.leads,
-        cierresZoho: zoho.cierres,
-        cplZoho: zoho.leads ? g.spend / zoho.leads : null,
-      };
-    })
+  const adCurrent = groupAndCross(filteredRows, leads, "adId", "adName", "utmContent");
+  const adPrev = prevRows ? groupAndCross(prevRows, prevLeads, "adId", "adName", "utmContent") : {};
+  const adRows = Object.entries(adCurrent)
+    .map(([key, g]) => ({ ...g, _prev: adPrev[key] || null }))
     .sort((a, b) => b.leadsZoho - a.leadsZoho || b.spend - a.spend);
 
   return (
@@ -1915,22 +1927,75 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
         <SectionLabel>Mejores Adsets — cruce con pipeline de ZOHO</SectionLabel>
         <div style={{ color: COLORS.muted, fontSize: 12.5, marginBottom: 14 }}>
           Compara lo que Meta reporta por adset contra los leads que REALMENTE entraron a ZOHO con ese
-          adset en su <code>utm_campaign</code>. Es una coincidencia de texto aproximada (ZOHO guarda
-          "campaña + adset" concatenados ahí) — úsalo como dirección, no como verdad absoluta al 100%.
+          adset en su <code>utm_campaign</code>, y qué tanto avanzan en el pipeline (Mini-COD, COD,
+          Seguimiento Final, Cierre). Es una coincidencia de texto aproximada (ZOHO guarda "campaña +
+          adset" concatenados ahí) — úsalo como dirección, no como verdad absoluta al 100%.
         </div>
       </div>
+
+      {adsetRows.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <SectionLabel>Top adsets por leads reales en ZOHO</SectionLabel>
+          <SimpleBarChart
+            layout="vertical"
+            height={Math.max(160, Math.min(8, adsetRows.length) * 34)}
+            data={adsetRows.slice(0, 8).map((r) => ({ label: r.adsetName, "Leads ZOHO": r.leadsZoho }))}
+            bars={[{ key: "Leads ZOHO", color: COLORS.navy }]}
+          />
+        </Card>
+      )}
+
       <Table
         columns={[
           { key: "campaignName", header: "Campaña" },
           { key: "adsetName", header: "Adset (audiencia)" },
-          { key: "spend", header: "Inversión", align: "right", render: (r) => fmtMoney(r.spend) },
-          { key: "resultado", header: "Resultados Meta", align: "right", render: (r) => r.resultado.toLocaleString("es-MX") },
-          { key: "costoPorResultado", header: "Costo/Resultado Meta", align: "right", render: (r) => fmtMoney(r.costoPorResultado) },
-          { key: "leadsZoho", header: "Leads en ZOHO", align: "right" },
-          { key: "cierresZoho", header: "Cierres ZOHO", align: "right" },
-          { key: "cplZoho", header: "CPL real (ZOHO)", align: "right", render: (r) => fmtMoney(r.cplZoho) },
+          {
+            key: "spend",
+            header: "Inversión",
+            align: "right",
+            render: (r) => fmtMoney(r.spend),
+          },
+          {
+            key: "leadsZoho",
+            header: "Leads ZOHO",
+            align: "right",
+            render: (r) => (
+              <div>
+                {r.leadsZoho}
+                {r._prev && <KpiDelta current={r.leadsZoho} previous={r._prev.leadsZoho} fmtAbs={(v) => v} />}
+              </div>
+            ),
+          },
+          {
+            key: "miniCodZoho",
+            header: "Mini-COD",
+            align: "right",
+            render: (r) => (
+              <div>
+                {r.miniCodZoho}
+                {r.miniCodPct !== null && (
+                  <Pill color={semaforo("miniCod", r.miniCodPct)}>{fmtPct(r.miniCodPct)}</Pill>
+                )}
+              </div>
+            ),
+          },
+          { key: "codZoho", header: "COD", align: "right", render: (r) => r.codZoho },
+          { key: "sfZoho", header: "Seg. Final", align: "right", render: (r) => r.sfZoho },
+          { key: "cierresZoho", header: "Cierres", align: "right", render: (r) => r.cierresZoho },
+          {
+            key: "cplZoho",
+            header: "CPL real (ZOHO)",
+            align: "right",
+            render: (r) => (
+              <div>
+                {fmtMoney(r.cplZoho)}
+                {r._prev && <KpiDelta current={r.cplZoho} previous={r._prev.cplZoho} invert fmtAbs={fmtMoney} />}
+              </div>
+            ),
+          },
         ]}
         rows={adsetRows}
+        rowStyle={(r, i) => (i === 0 && r.leadsZoho > 0 ? { background: "#E7F5EC" } : {})}
       />
       <SourceNote>Query-Meta (o API en vivo) + Base ZOHO OPS 2026, cruzados por texto (utm_campaign)</SourceNote>
 
@@ -1940,20 +2005,72 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
           Mismo cruce, ahora a nivel anuncio/creativo, contra el campo <code>utm_content</code> de ZOHO.
         </div>
       </div>
+
+      {adRows.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <SectionLabel>Top anuncios por leads reales en ZOHO</SectionLabel>
+          <SimpleBarChart
+            layout="vertical"
+            height={Math.max(160, Math.min(8, adRows.length) * 34)}
+            data={adRows.slice(0, 8).map((r) => ({ label: r.adName, "Leads ZOHO": r.leadsZoho }))}
+            bars={[{ key: "Leads ZOHO", color: COLORS.crimson }]}
+          />
+        </Card>
+      )}
+
       <Table
         columns={[
           { key: "campaignName", header: "Campaña" },
           { key: "adName", header: "Anuncio (creativo)" },
           { key: "spend", header: "Inversión", align: "right", render: (r) => fmtMoney(r.spend) },
-          { key: "resultado", header: "Resultados Meta", align: "right", render: (r) => r.resultado.toLocaleString("es-MX") },
-          { key: "costoPorResultado", header: "Costo/Resultado Meta", align: "right", render: (r) => fmtMoney(r.costoPorResultado) },
-          { key: "leadsZoho", header: "Leads en ZOHO", align: "right" },
-          { key: "cierresZoho", header: "Cierres ZOHO", align: "right" },
-          { key: "cplZoho", header: "CPL real (ZOHO)", align: "right", render: (r) => fmtMoney(r.cplZoho) },
+          {
+            key: "leadsZoho",
+            header: "Leads ZOHO",
+            align: "right",
+            render: (r) => (
+              <div>
+                {r.leadsZoho}
+                {r._prev && <KpiDelta current={r.leadsZoho} previous={r._prev.leadsZoho} fmtAbs={(v) => v} />}
+              </div>
+            ),
+          },
+          {
+            key: "miniCodZoho",
+            header: "Mini-COD",
+            align: "right",
+            render: (r) => (
+              <div>
+                {r.miniCodZoho}
+                {r.miniCodPct !== null && (
+                  <Pill color={semaforo("miniCod", r.miniCodPct)}>{fmtPct(r.miniCodPct)}</Pill>
+                )}
+              </div>
+            ),
+          },
+          { key: "codZoho", header: "COD", align: "right", render: (r) => r.codZoho },
+          { key: "sfZoho", header: "Seg. Final", align: "right", render: (r) => r.sfZoho },
+          { key: "cierresZoho", header: "Cierres", align: "right", render: (r) => r.cierresZoho },
+          {
+            key: "cplZoho",
+            header: "CPL real (ZOHO)",
+            align: "right",
+            render: (r) => (
+              <div>
+                {fmtMoney(r.cplZoho)}
+                {r._prev && <KpiDelta current={r.cplZoho} previous={r._prev.cplZoho} invert fmtAbs={fmtMoney} />}
+              </div>
+            ),
+          },
         ]}
         rows={adRows}
+        rowStyle={(r, i) => (i === 0 && r.leadsZoho > 0 ? { background: "#FBE7EB" } : {})}
       />
       <SourceNote>Query-Meta (o API en vivo) + Base ZOHO OPS 2026, cruzados por texto (utm_content)</SourceNote>
+      <div style={{ fontSize: 11.5, color: COLORS.muted, marginTop: 6 }}>
+        Los deltas (▲▼) en Leads ZOHO y CPL real comparan contra el mismo adset/anuncio en el período
+        anterior equivalente. Si un adset o anuncio es nuevo (no corrió en el período anterior), no muestra
+        delta.
+      </div>
     </div>
   );
 }
@@ -2515,6 +2632,7 @@ export default function App() {
                   prevRangeStart={prevRangeStart}
                   prevRangeEnd={prevRangeEnd}
                   leads={filteredLeads}
+                  prevLeads={prevLeads}
                 />
               )}
               {tab === "pipelineMensual" && <PipelineMensualFase leads={filteredLeads} periodKey={granularityAuto} />}
