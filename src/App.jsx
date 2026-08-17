@@ -295,7 +295,15 @@ function processZohoLeads(rows) {
     const fase = pick(r, ["Fase"]) || "";
     const faseNorm = normalize(fase);
 
-    const horaCreacion = parseDMY(pick(r, ["Hora de creación"]));
+    // K = "Hora de creación (Sospechosos convertidos)" — cuándo entró REALMENTE
+    // el contacto (lo más cercano al evento que también registra la plataforma
+    // de ads). Es la fecha canónica de entrada en todo el dashboard, y la
+    // misma que usa tu Sheet para calcular "SEMANA CREACIÓN LEAD".
+    // M = "Hora de creación" — cuándo se formalizó como Lead/Oportunidad
+    // calificada (puede ser días después de K). Se guarda aparte
+    // (horaConversion) solo para medir el tiempo de calificación K→M.
+    const horaCreacion = parseDMY(pick(r, ["Hora de creación (Sospechosos convertidos)"]));
+    const horaConversion = parseDMY(pick(r, ["Hora de creación"]));
     const horaModificacion = parseDMY(pick(r, ["Hora de modificación"]));
 
     let anioCreacion = parseInt(pick(r, ["AÑO CREACIÓN"]), 10) || (horaCreacion ? horaCreacion.getFullYear() : null);
@@ -349,6 +357,7 @@ function processZohoLeads(rows) {
       seguimientoFinal: faseNorm === normalize(SEGUIMIENTO_FINAL_FASE),
       programaAceptado: faseNorm === normalize(PROGRAMA_ACEPTADO_FASE),
       horaCreacion,
+      horaConversion,
       horaModificacion,
       anioCreacion,
       mesCreacion,
@@ -483,6 +492,56 @@ function computeCostosPorEtapa(paidLeads, investmentTotal) {
 // Distribución de la Fase ACTUAL de los leads, agrupada por el período en
 // que ENTRARON (mes o semana, según granularidad). Útil para ver mes/semana
 // a mes/semana en qué parte del pipeline se quedaron.
+// Días entre dos fechas (positivos siempre; si el orden viene invertido por
+// algún dato sucio, se descarta en vez de reportar un negativo engañoso).
+function daysBetween(a, b) {
+  if (!a || !b) return null;
+  const d = Math.round((b.getTime() - a.getTime()) / 86400000);
+  return d >= 0 ? d : null;
+}
+
+function average(arr) {
+  return arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
+}
+function median(arr) {
+  if (!arr.length) return null;
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+// Tiempos de procesamiento entre etapas del pipeline. El tramo "→ Cierre" es
+// una ESTIMACIÓN (usa Hora de modificación como proxy de fecha de cierre,
+// porque ZOHO no tiene un campo de fecha de cierre dedicado) y excluye los
+// leads de Adán Cortés (ya no está activo — sus registros no reflejan un
+// ciclo de venta real, según validamos con datos reales).
+function computeVelocidadPipeline(leads) {
+  const paid = leads.filter((l) => l.paid);
+
+  const kToM = paid.map((l) => daysBetween(l.horaCreacion, l.horaConversion)).filter((v) => v !== null);
+  const kToMiniCod = paid.map((l) => daysBetween(l.horaCreacion, l.eventoMiniCod)).filter((v) => v !== null);
+  const miniCodToCod = paid
+    .filter((l) => l.eventoMiniCod && l.eventoCod)
+    .map((l) => daysBetween(l.eventoMiniCod, l.eventoCod))
+    .filter((v) => v !== null);
+  const codToDiag = paid
+    .filter((l) => l.eventoCod && l.eventoDiagnostico)
+    .map((l) => daysBetween(l.eventoCod, l.eventoDiagnostico))
+    .filter((v) => v !== null);
+  const kToCierre = paid
+    .filter((l) => l.programaAceptado && !l.esAdan)
+    .map((l) => daysBetween(l.horaCreacion, l.horaModificacion))
+    .filter((v) => v !== null);
+
+  return [
+    { etapa: "Sospechoso → Lead calificado", n: kToM.length, promedio: average(kToM), mediana: median(kToM), estimado: false },
+    { etapa: "Entrada → Mini-COD", n: kToMiniCod.length, promedio: average(kToMiniCod), mediana: median(kToMiniCod), estimado: false },
+    { etapa: "Mini-COD → COD", n: miniCodToCod.length, promedio: average(miniCodToCod), mediana: median(miniCodToCod), estimado: false },
+    { etapa: "COD → Diagnóstico", n: codToDiag.length, promedio: average(codToDiag), mediana: median(codToDiag), estimado: false },
+    { etapa: "Entrada → Cierre (estimado)", n: kToCierre.length, promedio: average(kToCierre), mediana: median(kToCierre), estimado: true },
+  ];
+}
+
 function computePipelinePorFase(leads, periodKey, topN = 6) {
   const faseCounts = {};
   for (const l of leads) {
@@ -1573,6 +1632,75 @@ function CostosPorEtapa({ leads, investmentTotal }) {
    VISTA 8: TOTAL VS ROCKIN
    ------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------
+   VISTA: VELOCIDAD DEL PIPELINE
+   ------------------------------------------------------------------------- */
+
+function fmtDias(v) {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  return `${v.toFixed(1)} días`;
+}
+
+function VelocidadPipeline({ leads }) {
+  const etapas = computeVelocidadPipeline(leads);
+  const chartData = etapas
+    .filter((e) => e.n > 0)
+    .map((e) => ({ label: e.etapa, "Días (mediana)": Math.round(e.mediana * 10) / 10 }));
+
+  return (
+    <div>
+      <div style={{ color: COLORS.muted, fontSize: 13, marginBottom: 14 }}>
+        Tiempo que tarda un lead pagado en pasar de una etapa a la siguiente. Uso la <strong>mediana</strong> como
+        referencia principal (menos sensible a casos atípicos que el promedio) — ambas se muestran para que
+        compares.
+      </div>
+
+      {chartData.length > 0 && (
+        <Card style={{ marginBottom: 20 }}>
+          <SectionLabel>Mediana de días por transición</SectionLabel>
+          <SimpleBarChart
+            layout="vertical"
+            height={Math.max(160, chartData.length * 50)}
+            data={chartData}
+            bars={[{ key: "Días (mediana)", color: COLORS.navy }]}
+          />
+        </Card>
+      )}
+
+      <Table
+        columns={[
+          {
+            key: "etapa",
+            header: "Transición",
+            render: (r) => (
+              <span>
+                {r.etapa}
+                {r.estimado && (
+                  <span style={{ color: COLORS.crimson, fontWeight: 700, fontSize: 11, marginLeft: 6 }}>
+                    ESTIMADO
+                  </span>
+                )}
+              </span>
+            ),
+          },
+          { key: "n", header: "Leads medidos", align: "right" },
+          { key: "mediana", header: "Mediana", align: "right", render: (r) => fmtDias(r.mediana) },
+          { key: "promedio", header: "Promedio", align: "right", render: (r) => fmtDias(r.promedio) },
+        ]}
+        rows={etapas}
+      />
+
+      <div style={{ fontSize: 11.5, color: COLORS.muted, marginTop: 10 }}>
+        <strong>Entrada → Cierre</strong> es una estimación: ZOHO no tiene un campo de fecha de cierre
+        dedicado, así que uso "Hora de modificación" como proxy — que puede inflarse si el registro se
+        editó después de cerrado (corrección de datos, notas, etc.). Excluye los leads asignados a Adán
+        Cortés, cuyos registros no reflejan un ciclo de venta real (ya no está activo en la empresa).
+      </div>
+      <SourceNote>{SOURCE_ZOHO}</SourceNote>
+    </div>
+  );
+}
+
 function TotalVsRockin({ periodAll, periodPaid, periodLabel }) {
   const paidByKey = Object.fromEntries(periodPaid.map((r) => [r.key, r]));
   const rows = periodAll.map((r) => {
@@ -2389,7 +2517,7 @@ export default function App() {
         if (cancelled) return;
         assertColumns(metaRows, ["Year", "Month", "Date", "Total Cost", "Website leads"], TABS_SOURCE.meta);
         assertColumns(googleRows, ["Date", "Month", "Cost", "Conversions", "Campaign"], TABS_SOURCE.google);
-        assertColumns(zohoRows, ["ID de registro", "Fase", "Fuente de Sospechoso"], TABS_SOURCE.zoho);
+        assertColumns(zohoRows, ["ID de registro", "Fase", "Fuente de Sospechoso", "Hora de creación (Sospechosos convertidos)"], TABS_SOURCE.zoho);
         const meta = processMetaInvestment(metaRows);
         const google = processGoogleInvestment(googleRows);
         const zoho = processZohoLeads(zohoRows);
@@ -2524,6 +2652,7 @@ export default function App() {
     { key: "sf", label: "Seguimiento Final" },
     { key: "utm", label: "Campañas UTM" },
     { key: "costos", label: "Costos por Etapa" },
+    { key: "velocidad", label: "Velocidad del Pipeline" },
     { key: "totalRockin", label: "Total vs Rockin" },
   ];
   const activeTabLabel = TABS.find((t) => t.key === tab)?.label || "";
@@ -2643,6 +2772,7 @@ export default function App() {
               {tab === "sf" && <SeguimientoFinal leads={filteredLeads} />}
               {tab === "utm" && <CampanasUtm leads={filteredLeads} />}
               {tab === "costos" && <CostosPorEtapa leads={filteredLeads} investmentTotal={investmentTotal} />}
+              {tab === "velocidad" && <VelocidadPipeline leads={leads} />}
               {tab === "totalRockin" && (
                 <TotalVsRockin periodAll={periodAllAuto} periodPaid={periodPaidAuto} periodLabel={periodLabelAuto} />
               )}
