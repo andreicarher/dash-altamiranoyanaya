@@ -962,12 +962,67 @@ function Table({ columns, rows, rowStyle }) {
    VISTA 1: RESUMEN EJECUTIVO
    ------------------------------------------------------------------------- */
 
-function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prevLeads, prevInvestmentTotal, hasPrevPeriod }) {
+// Presupuesto mensual de referencia para el semáforo de gasto en Resumen
+// Ejecutivo. Si el presupuesto real cambia, actualiza este valor.
+const MONTHLY_BUDGET_MXN = 26000;
+
+// Prorratea el presupuesto mensual según cuántos días cubre el rango
+// seleccionado (presupuesto diario = mensual/30), y proyecta el gasto de
+// cierre de período según el ritmo de gasto hasta HOY (si el período ya
+// terminó, la "proyección" es simplemente el gasto real, sin extrapolar).
+function computeBudgetMetrics(investmentTotal, rangeStart, rangeEnd) {
+  if (!rangeStart || !rangeEnd) return null;
+  const daysInRange = Math.round((rangeEnd - rangeStart) / 86400000) + 1;
+  const dailyBudget = MONTHLY_BUDGET_MXN / 30;
+  const presupuestoPeriodo = dailyBudget * daysInRange;
+  const today = new Date();
+  let daysElapsed;
+  let periodoEnCurso = true;
+  if (today < rangeStart) {
+    daysElapsed = 0;
+  } else if (today > rangeEnd) {
+    daysElapsed = daysInRange;
+    periodoEnCurso = false;
+  } else {
+    daysElapsed = Math.round((today - rangeStart) / 86400000) + 1;
+  }
+  const proyeccion = periodoEnCurso && daysElapsed > 0 ? (investmentTotal / daysElapsed) * daysInRange : null;
+  return {
+    daysInRange,
+    presupuestoPeriodo,
+    proyeccion,
+    periodoEnCurso,
+    pctGastado: presupuestoPeriodo ? (investmentTotal / presupuestoPeriodo) * 100 : null,
+    pctProyectado: proyeccion !== null && presupuestoPeriodo ? (proyeccion / presupuestoPeriodo) * 100 : null,
+  };
+}
+
+function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prevLeads, prevInvestmentTotal, hasPrevPeriod, rangeStart, rangeEnd }) {
   const paidLeads = leads.filter((l) => l.paid);
   const funnelAll = computeFunnel(leads);
   const funnelPaid = computeFunnel(paidLeads);
-  const cplPagado = funnelPaid.total ? investmentTotal / funnelPaid.total : null;
-  const cplGeneral = funnelAll.total ? investmentTotal / funnelAll.total : null;
+
+  // Inversión y resultados por canal. "Resultado" es la métrica que reporta
+  // cada plataforma (NO es lo mismo que un lead real en ZOHO):
+  // Meta -> Website leads, Google -> Conversions.
+  const metaRows = investment.filter((r) => r.canal === "Meta");
+  const googleSearchRows = investment.filter((r) => r.canal === "Google" && r.googleChannel === "search");
+  const googleYoutubeRows = investment.filter((r) => r.canal === "Google" && r.googleChannel === "youtube");
+  const googleOtrasRows = investment.filter((r) => r.canal === "Google" && r.googleChannel === "otras");
+
+  const sum = (rows, key) => rows.reduce((s, r) => s + (r[key] || 0), 0);
+
+  // Prospección (genera leads/registros) vs. Awareness (genera suscriptores
+  // al canal, NO leads). El CPL debe calcularse solo con la inversión de
+  // prospección — meterle el gasto de YouTube infla el CPL artificialmente
+  // por dinero que nunca tuvo la intención de generar un lead.
+  const investmentAwareness = sum(googleYoutubeRows, "cost");
+  const investmentProspeccion = investmentTotal - investmentAwareness;
+
+  const cplPagado = funnelPaid.total ? investmentProspeccion / funnelPaid.total : null;
+  const cplGeneral = funnelAll.total ? investmentProspeccion / funnelAll.total : null;
+
+  const budget = computeBudgetMetrics(investmentTotal, rangeStart, rangeEnd);
 
   // Mismas métricas, pero para el período anterior equivalente — para poder
   // mostrar el delta (▲▼) debajo de cada tarjeta. Si no hay período anterior
@@ -983,15 +1038,6 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prev
   const alertaNC =
     last2.length === 2 && last2.every((w) => w.noContactadosPct > THRESHOLDS.noContactado.yellow);
 
-  // Inversión y resultados por canal. "Resultado" es la métrica que reporta
-  // cada plataforma (NO es lo mismo que un lead real en ZOHO):
-  // Meta -> Website leads, Google -> Conversions.
-  const metaRows = investment.filter((r) => r.canal === "Meta");
-  const googleSearchRows = investment.filter((r) => r.canal === "Google" && r.googleChannel === "search");
-  const googleYoutubeRows = investment.filter((r) => r.canal === "Google" && r.googleChannel === "youtube");
-  const googleOtrasRows = investment.filter((r) => r.canal === "Google" && r.googleChannel === "otras");
-
-  const sum = (rows, key) => rows.reduce((s, r) => s + (r[key] || 0), 0);
   const canales = [
     { label: "Meta Ads", inversion: sum(metaRows, "cost"), resultado: sum(metaRows, "websiteLeads"), resultadoLabel: "Registros landing" },
     { label: "Google Search", inversion: sum(googleSearchRows, "cost"), resultado: sum(googleSearchRows, "conversions"), resultadoLabel: "Registros landing" },
@@ -1033,22 +1079,17 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prev
           }
         />
         <KpiCard
-          label="Inversión total"
-          value={fmtMoney(investmentTotal)}
-          delta={<KpiDelta current={investmentTotal} previous={hasPrevPeriod ? prevInvestmentTotal : null} fmtAbs={fmtMoney} />}
-        />
-        <KpiCard
           label="CPL pagado"
           value={fmtMoney(cplPagado)}
           color={semaforo("cplPagado", cplPagado)}
-          sub="Inversión / leads de fuentes pagadas"
+          sub="Inversión de prospección / leads pagados"
           highlight
           delta={<KpiDelta current={cplPagado} previous={prevCplPagado} invert fmtAbs={fmtMoney} />}
         />
         <KpiCard
           label="CPL general"
           value={fmtMoney(cplGeneral)}
-          sub="Inversión / todos los leads"
+          sub="Inversión de prospección / todos los leads"
           delta={<KpiDelta current={cplGeneral} previous={prevCplGeneral} invert fmtAbs={fmtMoney} />}
         />
         <KpiCard
@@ -1076,6 +1117,49 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prev
           }
         />
       </div>
+
+      <Card style={{ marginBottom: 20 }}>
+        <SectionLabel>Presupuesto y gasto</SectionLabel>
+        <div style={{ color: COLORS.muted, fontSize: 12.5, marginBottom: 14 }}>
+          Presupuesto de referencia: ${MONTHLY_BUDGET_MXN.toLocaleString("es-MX")} MXN/mes, prorrateado según
+          los días que cubre tu filtro de fecha ({budget ? budget.daysInRange : "—"} días ≈{" "}
+          {fmtMoney(budget?.presupuestoPeriodo)}). "Prospección" = Meta Ads + Google Search (genera leads).
+          "Awareness" = Google YouTube (genera suscriptores, no leads) — por eso el CPL de arriba se calcula
+          solo con la inversión de prospección.
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
+          <KpiCard
+            label="Inversión total"
+            value={fmtMoney(investmentTotal)}
+            delta={<KpiDelta current={investmentTotal} previous={hasPrevPeriod ? prevInvestmentTotal : null} fmtAbs={fmtMoney} />}
+          />
+          <KpiCard label="Inversión prospección (leads)" value={fmtMoney(investmentProspeccion)} />
+          <KpiCard label="Inversión awareness (YouTube)" value={fmtMoney(investmentAwareness)} />
+          <KpiCard
+            label="% Presupuesto usado"
+            value={budget?.pctGastado !== null && budget?.pctGastado !== undefined ? `${budget.pctGastado.toFixed(0)}%` : "—"}
+            color={budget?.pctGastado > 100 ? COLORS.red : budget?.pctGastado > 85 ? COLORS.yellow : undefined}
+            highlight={budget?.pctGastado > 85}
+          />
+          <KpiCard
+            label={budget?.periodoEnCurso ? "Proyección de gasto (fin de período)" : "Gasto del período (ya cerrado)"}
+            value={
+              budget?.periodoEnCurso
+                ? budget?.proyeccion !== null
+                  ? fmtMoney(budget.proyeccion)
+                  : "—"
+                : fmtMoney(investmentTotal)
+            }
+            sub={
+              budget?.periodoEnCurso && budget?.pctProyectado !== null
+                ? `${budget.pctProyectado.toFixed(0)}% del presupuesto del período`
+                : undefined
+            }
+            color={budget?.pctProyectado > 100 ? COLORS.red : undefined}
+            highlight={budget?.pctProyectado > 100}
+          />
+        </div>
+      </Card>
 
       <Card style={{ marginBottom: 20 }}>
         <SectionLabel>Inversión y resultados por canal</SectionLabel>
@@ -2745,6 +2829,8 @@ export default function App() {
                   prevLeads={prevLeads}
                   prevInvestmentTotal={prevInvestmentTotal}
                   hasPrevPeriod={!!prevRangeStart}
+                  rangeStart={rangeStart}
+                  rangeEnd={rangeEnd}
                 />
               )}
               {tab === "evolucion" && (
