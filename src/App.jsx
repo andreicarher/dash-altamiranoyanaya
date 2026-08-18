@@ -41,6 +41,10 @@ const ASSUMED_YEAR_GOOGLE = 2026;
 // años anteriores (ej. 2022) que deben excluirse. Si el próximo año quieres
 // incluir 2027, actualiza este valor (o conviértelo en un rango).
 const VALID_YEAR = 2026;
+// Con un volumen histórico bajo (pocos cierres totales), cualquier fila con
+// menos leads que esto se marca visualmente como "muestra chica" — para que
+// nadie tome una decisión de presupuesto sobre "1 lead, 100% Mini-COD".
+const MUESTRA_MINIMA = 10;
 const PAID_SOURCES = ["rockin", "facebook ads", "instagram"];
 const NO_CONTACTADO_FASE = "identificación de sospechoso";
 const SEGUIMIENTO_FINAL_FASE = "seguimiento final";
@@ -515,6 +519,31 @@ function median(arr) {
 // porque ZOHO no tiene un campo de fecha de cierre dedicado) y excluye los
 // leads de Adán Cortés (ya no está activo — sus registros no reflejan un
 // ciclo de venta real, según validamos con datos reales).
+// Última fecha calendario de un mes o semana (WEEKNUM tipo 2, igual que el
+// Sheet: la semana empieza en lunes). Es una aproximación razonable para
+// decidir si un período es "muy reciente" — no necesita ser exacta al día.
+function periodEndDate(year, period, periodKey) {
+  if (periodKey === "mes") {
+    return new Date(year, period, 0, 23, 59, 59); // último día de ese mes
+  }
+  const jan1 = new Date(year, 0, 1);
+  const jan1Day = jan1.getDay(); // 0=domingo..6=sábado
+  const mondayOffset = jan1Day === 0 ? -6 : 1 - jan1Day;
+  const week1Monday = new Date(year, 0, 1 + mondayOffset);
+  const targetMonday = new Date(week1Monday.getTime() + (period - 1) * 7 * 86400000);
+  return new Date(targetMonday.getTime() + 6 * 86400000 + 23 * 3600000 + 59 * 60000 + 59000);
+}
+
+// Mediana de días Entrada→Mini-COD (del histórico completo, no del rango
+// filtrado) — se usa como referencia de "cuánto tarda normalmente un lead en
+// dar la primera señal de vida". Períodos más recientes que esto no han
+// tenido tiempo suficiente para mostrar su verdadero Mini-COD rate.
+function computeMadurezDias(leads) {
+  const etapas = computeVelocidadPipeline(leads);
+  const kToMiniCod = etapas.find((e) => e.etapa === "Entrada → Mini-COD");
+  return kToMiniCod && kToMiniCod.mediana !== null ? kToMiniCod.mediana : 10;
+}
+
 function computeVelocidadPipeline(leads) {
   const paid = leads.filter((l) => l.paid);
 
@@ -1022,6 +1051,12 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prev
   const cplGeneral = funnelAll.total ? investmentProspeccion / funnelAll.total : null;
 
   const budget = computeBudgetMetrics(investmentTotal, rangeStart, rangeEnd);
+  // El presupuesto prorrateado solo tiene sentido para rangos tipo "Mes
+  // actual"/"Mes pasado" — en rangos largos (ej. "Todo el histórico") el
+  // prorrateo da cifras absurdas (presupuesto de $1M+ MXN), así que se
+  // oculta el % y la proyección fuera de un rango razonable.
+  const BUDGET_MAX_DAYS = 45;
+  const showBudgetPacing = budget && budget.daysInRange <= BUDGET_MAX_DAYS;
 
   // Mismas métricas, pero para el período anterior equivalente — para poder
   // mostrar el delta (▲▼) debajo de cada tarjeta. Si no hay período anterior
@@ -1120,12 +1155,17 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prev
       <Card style={{ marginBottom: 20 }}>
         <SectionLabel>Presupuesto y gasto</SectionLabel>
         <div style={{ color: COLORS.muted, fontSize: 12.5, marginBottom: 14 }}>
-          Presupuesto de referencia: ${MONTHLY_BUDGET_MXN.toLocaleString("es-MX")} MXN/mes, prorrateado según
-          los días que cubre tu filtro de fecha ({budget ? budget.daysInRange : "—"} días ≈{" "}
-          {fmtMoney(budget?.presupuestoPeriodo)}). "Prospección" = Meta Ads + Google Search (genera leads).
-          "Awareness" = Google YouTube (genera suscriptores, no leads). El CPL de arriba se calcula con la
-          inversión de <strong>Meta Ads + Google Search</strong> (se excluye únicamente YouTube) — mismo
-          criterio en todas las vistas del dashboard.
+          Presupuesto de referencia: ${MONTHLY_BUDGET_MXN.toLocaleString("es-MX")} MXN/mes. "Prospección" =
+          Meta Ads + Google Search (genera leads). "Awareness" = Google YouTube (genera suscriptores, no
+          leads). El CPL de arriba se calcula con la inversión de <strong>Meta Ads + Google Search</strong>{" "}
+          (se excluye únicamente YouTube) — mismo criterio en todas las vistas del dashboard.
+          {showBudgetPacing && (
+            <>
+              {" "}
+              El % y la proyección de abajo prorratean el presupuesto según los días de tu filtro (
+              {budget.daysInRange} días ≈ {fmtMoney(budget.presupuestoPeriodo)}).
+            </>
+          )}
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
           <KpiCard
@@ -1135,30 +1175,41 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prev
           />
           <KpiCard label="Inversión prospección (leads)" value={fmtMoney(investmentProspeccion)} />
           <KpiCard label="Inversión awareness (YouTube)" value={fmtMoney(investmentAwareness)} />
-          <KpiCard
-            label="% Presupuesto usado"
-            value={budget?.pctGastado !== null && budget?.pctGastado !== undefined ? `${budget.pctGastado.toFixed(0)}%` : "—"}
-            color={budget?.pctGastado > 100 ? COLORS.red : budget?.pctGastado > 85 ? COLORS.yellow : undefined}
-            highlight={budget?.pctGastado > 85}
-          />
-          <KpiCard
-            label={budget?.periodoEnCurso ? "Proyección de gasto (fin de período)" : "Gasto del período (ya cerrado)"}
-            value={
-              budget?.periodoEnCurso
-                ? budget?.proyeccion !== null
-                  ? fmtMoney(budget.proyeccion)
-                  : "—"
-                : fmtMoney(investmentTotal)
-            }
-            sub={
-              budget?.periodoEnCurso && budget?.pctProyectado !== null
-                ? `${budget.pctProyectado.toFixed(0)}% del presupuesto del período`
-                : undefined
-            }
-            color={budget?.pctProyectado > 100 ? COLORS.red : undefined}
-            highlight={budget?.pctProyectado > 100}
-          />
+          {showBudgetPacing && (
+            <>
+              <KpiCard
+                label="% Presupuesto usado"
+                value={budget?.pctGastado !== null && budget?.pctGastado !== undefined ? `${budget.pctGastado.toFixed(0)}%` : "—"}
+                color={budget?.pctGastado > 100 ? COLORS.red : budget?.pctGastado > 85 ? COLORS.yellow : undefined}
+                highlight={budget?.pctGastado > 85}
+              />
+              <KpiCard
+                label={budget?.periodoEnCurso ? "Proyección de gasto (fin de período)" : "Gasto del período (ya cerrado)"}
+                value={
+                  budget?.periodoEnCurso
+                    ? budget?.proyeccion !== null
+                      ? fmtMoney(budget.proyeccion)
+                      : "—"
+                    : fmtMoney(investmentTotal)
+                }
+                sub={
+                  budget?.periodoEnCurso && budget?.pctProyectado !== null
+                    ? `${budget.pctProyectado.toFixed(0)}% del presupuesto del período`
+                    : undefined
+                }
+                color={budget?.pctProyectado > 100 ? COLORS.red : undefined}
+                highlight={budget?.pctProyectado > 100}
+              />
+            </>
+          )}
         </div>
+        {!showBudgetPacing && (
+          <div style={{ fontSize: 11.5, color: COLORS.muted, marginTop: 10, fontStyle: "italic" }}>
+            El % de presupuesto usado y la proyección de gasto no se muestran en rangos largos (más de{" "}
+            {BUDGET_MAX_DAYS} días) — prorratear un presupuesto mensual sobre meses o años no da un número
+            útil. Cambia el filtro a "Mes actual" o "Mes pasado" para verlos.
+          </div>
+        )}
       </Card>
 
       <Card style={{ marginBottom: 20 }}>
@@ -1242,7 +1293,7 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prev
    VISTA 2: EVOLUCIÓN (mensual / semanal)
    ------------------------------------------------------------------------- */
 
-function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid, granularityAuto }) {
+function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid, granularityAuto, leads }) {
   const [periodo, setPeriodo] = useState(granularityAuto);
   const [soloPagadas, setSoloPagadas] = useState(false);
 
@@ -1256,7 +1307,19 @@ function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid, granularity
   const rows =
     periodo === "mes" ? (soloPagadas ? monthlyPaid : monthlyAll) : soloPagadas ? weeklyPaid : weeklyAll;
 
-  const chartData = rows.map((r) => ({
+  // Madurez del cohorte: un período cuya fecha de fin quedó a menos días que
+  // la mediana histórica Entrada→Mini-COD todavía no ha tenido tiempo de
+  // mostrar su verdadero Mini-COD rate/CPL — se marca para no confundir
+  // "campaña floja" con "lead que apenas entró".
+  const madurezDias = computeMadurezDias(leads);
+  const hoy = new Date();
+  const rowsConMadurez = rows.map((r) => {
+    const finPeriodo = periodEndDate(r.year, r.period, periodo);
+    const diasDesdeFin = (hoy - finPeriodo) / 86400000;
+    return { ...r, inmaduro: diasDesdeFin < madurezDias };
+  });
+
+  const chartData = rowsConMadurez.map((r) => ({
     label: r.label,
     "CPL pagado": r.cplPagado ? Math.round(r.cplPagado) : null,
     "CPL general": r.cplGeneral ? Math.round(r.cplGeneral) : null,
@@ -1306,7 +1369,23 @@ function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid, granularity
 
       <Table
         columns={[
-          { key: "label", header: "Período" },
+          {
+            key: "label",
+            header: "Período",
+            render: (r) => (
+              <span>
+                {r.label}
+                {r.inmaduro && (
+                  <span
+                    title="Este período es muy reciente — sus leads aún no han tenido tiempo de avanzar en el pipeline"
+                    style={{ color: COLORS.yellow, fontWeight: 700, fontSize: 11, marginLeft: 6 }}
+                  >
+                    🕐 madurando
+                  </span>
+                )}
+              </span>
+            ),
+          },
           {
             key: "leadsTotal",
             header: "Leads",
@@ -1359,10 +1438,13 @@ function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid, granularity
           },
           { key: "cplGeneral", header: "CPL general", align: "right", render: (r) => fmtMoney(r.cplGeneral) },
         ]}
-        rows={[...rows].reverse().map((r, i, arr) => ({ ...r, _prev: arr[i + 1] || null }))}
+        rows={[...rowsConMadurez].reverse().map((r, i, arr) => ({ ...r, _prev: arr[i + 1] || null }))}
       />
       <div style={{ fontSize: 11.5, color: COLORS.muted, marginTop: 6 }}>
         Los deltas (▲▼) comparan cada fila contra el período inmediatamente anterior en esta misma tabla.
+        🕐 <strong>madurando</strong> = este período terminó hace menos de {madurezDias.toFixed(0)} días (la
+        mediana histórica para que un lead llegue a Mini-COD) — sus tasas de conversión y CPL todavía pueden
+        subir conforme esos leads avanzan; no lo leas como "la campaña empeoró".
       </div>
       <SourceNote>{SOURCE_BOTH}</SourceNote>
     </div>
@@ -1441,6 +1523,10 @@ function SeguimientoFinal({ leads }) {
 
   return (
     <div>
+      <div style={{ color: COLORS.muted, fontSize: 12, marginBottom: 14 }}>
+        Muestra el estado ACTUAL de todo tu pipeline activo — no se acota al filtro de fecha de arriba, para
+        no esconder casos que llevan mucho tiempo abiertos solo porque entraron antes del rango filtrado.
+      </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 20 }}>
         <KpiCard label="Activos en Seguimiento Final" value={sfLeads.length} />
         <KpiCard label="Urgentes (>65 días)" value={urgentes} color={COLORS.red} highlight={urgentes > 0} />
@@ -1508,11 +1594,14 @@ function CampanasUtm({ leads }) {
     if (!groups[k]) groups[k] = [];
     groups[k].push(l);
   }
+  const isSoloId = (s) => /^\d{5,}$/.test(String(s || "").trim());
   const rows = Object.entries(groups)
     .map(([campania, campLeads]) => {
       const f = computeFunnel(campLeads);
       return {
-        campania,
+        campania: isSoloId(campania) ? `ID sin nombre: ${campania}` : campania,
+        campaniaRaw: campania,
+        esSoloId: isSoloId(campania),
         leads: f.total,
         ncPct: f.noContactadosPct,
         miniCodPct: f.miniCodPct,
@@ -1524,6 +1613,12 @@ function CampanasUtm({ leads }) {
     })
     .sort((a, b) => b.miniCodPct - a.miniCodPct);
 
+  // Detección simple de inconsistencia de nomenclatura: cuántas campañas
+  // (con volumen real) llegan solo como ID numérico, sin nombre legible.
+  const conVolumen = rows.filter((r) => r.leads >= 2 && r.campaniaRaw !== "Sin UTM");
+  const soloIdCount = conVolumen.filter((r) => r.esSoloId).length;
+  const mostrarAvisoTaxonomia = conVolumen.length > 0 && soloIdCount / conVolumen.length > 0.15;
+
   const top8 = rows.slice(0, 8).map((r) => ({ label: r.campania, "Mini-COD%": Math.round(r.miniCodPct * 10) / 10 }));
 
   return (
@@ -1533,6 +1628,26 @@ function CampanasUtm({ leads }) {
         Campaña identificada por <code>utm_campaign (Sospechosos convertidos)</code>; leads sin UTM (pre-abril
         2026) se agrupan como "Sin UTM".
       </div>
+
+      {mostrarAvisoTaxonomia && (
+        <div
+          style={{
+            background: "#FEF6E7",
+            border: `1px solid ${COLORS.yellow}`,
+            borderRadius: 10,
+            padding: "12px 16px",
+            marginBottom: 18,
+            color: "#8A5A07",
+            fontSize: 13,
+          }}
+        >
+          ⚠️ <strong>Higiene de datos:</strong> {soloIdCount} de {conVolumen.length} campañas con volumen real
+          llegan como un ID numérico crudo, sin nombre legible (ej. "23938420450") — probablemente por
+          parámetros UTM inconsistentes entre Meta/Google y ZOHO. Esto no es un problema del dashboard, es de
+          cómo se están armando las URLs de las campañas. Vale la pena estandarizar la nomenclatura de UTMs
+          en origen para no perder trazabilidad de qué campaña/adset genera cada lead.
+        </div>
+      )}
 
       {top8.length > 0 && (
         <Card style={{ marginBottom: 20 }}>
@@ -1563,6 +1678,7 @@ function CampanasUtm({ leads }) {
         ]}
         rows={rows}
         rowStyle={(r) => {
+          if (r.leads > 0 && r.leads < MUESTRA_MINIMA) return { opacity: 0.55 };
           // Solo resalta extremos con volumen mínimo (2+ leads), para no
           // destacar campañas con 1 lead y 100%/0% que no son representativas.
           const relevantes = rows.filter((x) => x.leads >= 2);
@@ -1779,6 +1895,102 @@ function VelocidadPipeline({ leads }) {
         dedicado, así que uso "Hora de modificación" como proxy — que puede inflarse si el registro se
         editó después de cerrado (corrección de datos, notas, etc.). Excluye los leads asignados a Adán
         Cortés, cuyos registros no reflejan un ciclo de venta real (ya no está activo en la empresa).
+      </div>
+      <SourceNote>{SOURCE_ZOHO}</SourceNote>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------
+   VISTA: PAGADO VS ORGÁNICO — CALIDAD DE CONVERSIÓN
+   ------------------------------------------------------------------------- */
+
+function CalidadPagadoOrganico({ leads }) {
+  const pagados = leads.filter((l) => l.paid);
+  const organicos = leads.filter((l) => !l.paid);
+
+  const buildRow = (grupo, nombre) => {
+    const f = computeFunnel(grupo);
+    const sf = grupo.filter((l) => l.seguimientoFinal).length;
+    return {
+      nombre,
+      leads: f.total,
+      ncPct: f.noContactadosPct,
+      miniCodPct: f.miniCodPct,
+      codPct: f.codPct,
+      sf,
+      cierres: f.cierres,
+      tasaCierre: f.total ? (f.cierres / f.total) * 100 : 0,
+    };
+  };
+
+  const rows = [buildRow(pagados, "Pagado"), buildRow(organicos, "Orgánico")];
+
+  return (
+    <div>
+      <div style={{ color: COLORS.muted, fontSize: 13, marginBottom: 14 }}>
+        No solo volumen — compara qué tan bien convierte cada fuente en cada etapa del pipeline. En negocios
+        de ticket alto como coaching ejecutivo, los referidos/orgánicos suelen cerrar mejor que el pagado
+        aunque sean menos en cantidad; esta vista lo hace visible.
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+        <Card>
+          <SectionLabel>Tasas de conversión por etapa</SectionLabel>
+          <SimpleBarChart
+            data={[
+              { label: "Mini-COD%", Pagado: Math.round(rows[0].miniCodPct * 10) / 10, Orgánico: Math.round(rows[1].miniCodPct * 10) / 10 },
+              { label: "COD%", Pagado: Math.round(rows[0].codPct * 10) / 10, Orgánico: Math.round(rows[1].codPct * 10) / 10 },
+              { label: "Tasa de cierre%", Pagado: Math.round(rows[0].tasaCierre * 10) / 10, Orgánico: Math.round(rows[1].tasaCierre * 10) / 10 },
+            ]}
+            bars={[
+              { key: "Pagado", color: COLORS.navy },
+              { key: "Orgánico", color: COLORS.crimson },
+            ]}
+          />
+        </Card>
+        <Card>
+          <SectionLabel>Volumen de leads</SectionLabel>
+          <SimpleDonut
+            data={[
+              { name: "Pagado", value: rows[0].leads, color: COLORS.navy },
+              { name: "Orgánico", value: rows[1].leads, color: COLORS.crimson },
+            ]}
+          />
+        </Card>
+      </div>
+
+      <Table
+        columns={[
+          { key: "nombre", header: "Fuente" },
+          { key: "leads", header: "Leads", align: "right" },
+          {
+            key: "ncPct",
+            header: "No contactados",
+            align: "right",
+            render: (r) => <Pill color={semaforo("noContactado", r.ncPct)}>{fmtPct(r.ncPct)}</Pill>,
+          },
+          {
+            key: "miniCodPct",
+            header: "Mini-COD%",
+            align: "right",
+            render: (r) => <Pill color={semaforo("miniCod", r.miniCodPct)}>{fmtPct(r.miniCodPct)}</Pill>,
+          },
+          { key: "codPct", header: "COD%", align: "right", render: (r) => fmtPct(r.codPct) },
+          { key: "sf", header: "En Seguimiento Final", align: "right" },
+          { key: "cierres", header: "Cierres", align: "right" },
+          {
+            key: "tasaCierre",
+            header: "Tasa de cierre",
+            align: "right",
+            render: (r) => <strong>{fmtPct(r.tasaCierre)}</strong>,
+          },
+        ]}
+        rows={rows}
+      />
+      <div style={{ fontSize: 11.5, color: COLORS.muted, marginTop: 10 }}>
+        "Tasa de cierre" = Programa Aceptado / total de leads de esa fuente. Con volumen bajo de cierres
+        totales, tómalo como dirección — no como certeza estadística.
       </div>
       <SourceNote>{SOURCE_ZOHO}</SourceNote>
     </div>
@@ -2174,6 +2386,9 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
             render: (r) => (
               <div>
                 {r.leadsZoho}
+                {r.leadsZoho > 0 && r.leadsZoho < MUESTRA_MINIMA && (
+                  <div style={{ fontSize: 10.5, color: COLORS.yellow, fontWeight: 700 }}>muestra chica</div>
+                )}
                 {r._prev && <KpiDelta current={r.leadsZoho} previous={r._prev.leadsZoho} fmtAbs={(v) => v} />}
               </div>
             ),
@@ -2207,7 +2422,10 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
           },
         ]}
         rows={adsetRows}
-        rowStyle={(r, i) => (i === 0 && r.leadsZoho > 0 ? { background: "#E7F5EC" } : {})}
+        rowStyle={(r, i) => {
+          if (r.leadsZoho > 0 && r.leadsZoho < MUESTRA_MINIMA) return { opacity: 0.55 };
+          return i === 0 && r.leadsZoho > 0 ? { background: "#E7F5EC" } : {};
+        }}
       />
       <SourceNote>Query-Meta (o API en vivo) + Base ZOHO OPS 2026, cruzados por texto (utm_campaign)</SourceNote>
 
@@ -2242,6 +2460,9 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
             render: (r) => (
               <div>
                 {r.leadsZoho}
+                {r.leadsZoho > 0 && r.leadsZoho < MUESTRA_MINIMA && (
+                  <div style={{ fontSize: 10.5, color: COLORS.yellow, fontWeight: 700 }}>muestra chica</div>
+                )}
                 {r._prev && <KpiDelta current={r.leadsZoho} previous={r._prev.leadsZoho} fmtAbs={(v) => v} />}
               </div>
             ),
@@ -2275,7 +2496,10 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
           },
         ]}
         rows={adRows}
-        rowStyle={(r, i) => (i === 0 && r.leadsZoho > 0 ? { background: "#FBE7EB" } : {})}
+        rowStyle={(r, i) => {
+          if (r.leadsZoho > 0 && r.leadsZoho < MUESTRA_MINIMA) return { opacity: 0.55 };
+          return i === 0 && r.leadsZoho > 0 ? { background: "#FBE7EB" } : {};
+        }}
       />
       <SourceNote>Query-Meta (o API en vivo) + Base ZOHO OPS 2026, cruzados por texto (utm_content)</SourceNote>
       <div style={{ fontSize: 11.5, color: COLORS.muted, marginTop: 6 }}>
@@ -2626,7 +2850,11 @@ export default function App() {
   // ancla en las fechas de los LEADS, no de la inversión — así nunca se
   // vuelve a sumar inversión de un período sin leads correspondientes.
   const dataExtent = useMemo(() => {
-    const dates = leads.map((l) => l.horaCreacion).filter(Boolean);
+    // Solo se consideran leads con año válido (2026) — un solo registro con
+    // fecha corrupta (ej. K mal capturado apuntando a 2022) puede reventar
+    // "Todo el histórico" y de paso tumbar Meta Ads (su API rechaza rangos
+    // de más de 37 meses).
+    const dates = leads.filter((l) => l.anioCreacion === VALID_YEAR).map((l) => l.horaCreacion).filter(Boolean);
     if (!dates.length) return null;
     const times = dates.map((d) => d.getTime());
     return { min: new Date(Math.min(...times)), max: new Date(Math.max(...times)) };
@@ -2753,6 +2981,7 @@ export default function App() {
     { key: "costos", label: "Costos por Etapa" },
     { key: "velocidad", label: "Velocidad del Pipeline" },
     { key: "totalRockin", label: "Total vs Rockin" },
+    { key: "calidadPagOrg", label: "Pagado vs Orgánico" },
   ];
   const activeTabLabel = TABS.find((t) => t.key === tab)?.label || "";
   const updatedLabel = dataExtent
@@ -2856,6 +3085,7 @@ export default function App() {
                   weeklyAll={weeklyAll}
                   weeklyPaid={weeklyPaid}
                   granularityAuto={granularityAuto}
+                  leads={leads}
                 />
               )}
               {tab === "metaAds" && (
@@ -2871,13 +3101,14 @@ export default function App() {
               {tab === "pipelineMensual" && <PipelineMensualFase leads={filteredLeads} periodKey={granularityAuto} />}
               {tab === "semana" && <SemanaVsSemana weeklyAll={weeklyAllFull} />}
               {tab === "ops6" && <OpsSeisSemanas weeklyAll={weeklyAllFull} leads={leads} />}
-              {tab === "sf" && <SeguimientoFinal leads={filteredLeads} />}
+              {tab === "sf" && <SeguimientoFinal leads={leads} />}
               {tab === "utm" && <CampanasUtm leads={filteredLeads} />}
               {tab === "costos" && <CostosPorEtapa leads={filteredLeads} investmentMeta={investmentMetaTotal} />}
               {tab === "velocidad" && <VelocidadPipeline leads={leads} />}
               {tab === "totalRockin" && (
                 <TotalVsRockin periodAll={periodAllAuto} periodPaid={periodPaidAuto} periodLabel={periodLabelAuto} />
               )}
+              {tab === "calidadPagOrg" && <CalidadPagadoOrganico leads={leads} />}
             </>
           )}
         </div>
