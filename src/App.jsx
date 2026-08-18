@@ -997,7 +997,7 @@ function computeBudgetMetrics(investmentTotal, rangeStart, rangeEnd) {
   };
 }
 
-function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prevLeads, prevInvestmentTotal, hasPrevPeriod, rangeStart, rangeEnd }) {
+function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prevLeads, prevInvestmentTotal, prevInvestmentMetaTotal, hasPrevPeriod, rangeStart, rangeEnd }) {
   const paidLeads = leads.filter((l) => l.paid);
   const funnelAll = computeFunnel(leads);
   const funnelPaid = computeFunnel(paidLeads);
@@ -1012,13 +1012,12 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prev
 
   const sum = (rows, key) => rows.reduce((s, r) => s + (r[key] || 0), 0);
 
-  // Prospección (genera leads/registros) vs. Awareness (genera suscriptores
-  // al canal, NO leads). El CPL debe calcularse solo con la inversión de
-  // prospección — meterle el gasto de YouTube infla el CPL artificialmente
-  // por dinero que nunca tuvo la intención de generar un lead.
+  // Prospección (genera leads/registros) = Meta Ads + Google Search.
+  // Awareness (genera suscriptores al canal, NO leads) = Google YouTube.
+  // El CPL (pagado y general) se calcula con la inversión de PROSPECCIÓN —
+  // se excluye ÚNICAMENTE YouTube — mismo criterio en todo el dashboard.
   const investmentAwareness = sum(googleYoutubeRows, "cost");
   const investmentProspeccion = investmentTotal - investmentAwareness;
-
   const cplPagado = funnelPaid.total ? investmentProspeccion / funnelPaid.total : null;
   const cplGeneral = funnelAll.total ? investmentProspeccion / funnelAll.total : null;
 
@@ -1031,8 +1030,8 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prev
   const prevPaidLeads = (prevLeads || []).filter((l) => l.paid);
   const prevFunnelAll = hasPrevPeriod ? computeFunnel(prevLeads) : null;
   const prevFunnelPaid = hasPrevPeriod ? computeFunnel(prevPaidLeads) : null;
-  const prevCplPagado = hasPrevPeriod && prevFunnelPaid.total ? prevInvestmentTotal / prevFunnelPaid.total : null;
-  const prevCplGeneral = hasPrevPeriod && prevFunnelAll.total ? prevInvestmentTotal / prevFunnelAll.total : null;
+  const prevCplPagado = hasPrevPeriod && prevFunnelPaid.total ? prevInvestmentMetaTotal / prevFunnelPaid.total : null;
+  const prevCplGeneral = hasPrevPeriod && prevFunnelAll.total ? prevInvestmentMetaTotal / prevFunnelAll.total : null;
 
   const last2 = weeklyRows.slice(-2);
   const alertaNC =
@@ -1082,14 +1081,14 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prev
           label="CPL pagado"
           value={fmtMoney(cplPagado)}
           color={semaforo("cplPagado", cplPagado)}
-          sub="Inversión de prospección / leads pagados"
+          sub="Meta + Google Search (sin YouTube) / leads pagados"
           highlight
           delta={<KpiDelta current={cplPagado} previous={prevCplPagado} invert fmtAbs={fmtMoney} />}
         />
         <KpiCard
           label="CPL general"
           value={fmtMoney(cplGeneral)}
-          sub="Inversión de prospección / todos los leads"
+          sub="Meta + Google Search (sin YouTube) / todos los leads"
           delta={<KpiDelta current={cplGeneral} previous={prevCplGeneral} invert fmtAbs={fmtMoney} />}
         />
         <KpiCard
@@ -1124,8 +1123,9 @@ function ResumenEjecutivo({ leads, investment, investmentTotal, weeklyRows, prev
           Presupuesto de referencia: ${MONTHLY_BUDGET_MXN.toLocaleString("es-MX")} MXN/mes, prorrateado según
           los días que cubre tu filtro de fecha ({budget ? budget.daysInRange : "—"} días ≈{" "}
           {fmtMoney(budget?.presupuestoPeriodo)}). "Prospección" = Meta Ads + Google Search (genera leads).
-          "Awareness" = Google YouTube (genera suscriptores, no leads) — por eso el CPL de arriba se calcula
-          solo con la inversión de prospección.
+          "Awareness" = Google YouTube (genera suscriptores, no leads). El CPL de arriba se calcula con la
+          inversión de <strong>Meta Ads + Google Search</strong> (se excluye únicamente YouTube) — mismo
+          criterio en todas las vistas del dashboard.
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
           <KpiCard
@@ -1283,7 +1283,7 @@ function Evolucion({ monthlyAll, monthlyPaid, weeklyAll, weeklyPaid, granularity
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
         <Card>
-          <SectionLabel>CPL pagado vs CPL general</SectionLabel>
+          <SectionLabel>CPL pagado vs CPL general (Meta + Google Search, sin YouTube)</SectionLabel>
           <div style={{ height: 260 }}>
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
@@ -1386,7 +1386,7 @@ function SemanaVsSemana({ weeklyAll }) {
     { key: "miniCodPct", label: "Mini-COD rate", invert: false, fmt: fmtPct },
     { key: "codPct", label: "COD rate", invert: false, fmt: fmtPct },
     { key: "cierres", label: "Cierres", invert: false, fmt: (v) => v ?? 0 },
-    { key: "cplPagado", label: "CPL pagado", invert: true, fmt: fmtMoney },
+    { key: "cplPagado", label: "CPL pagado (Meta + Search, sin YouTube)", invert: true, fmt: fmtMoney },
   ];
 
   return (
@@ -1664,16 +1664,16 @@ function OpsSeisSemanas({ weeklyAll, leads }) {
    VISTA 7: COSTOS POR ETAPA
    ------------------------------------------------------------------------- */
 
-function CostosPorEtapa({ leads, investmentTotal }) {
+function CostosPorEtapa({ leads, investmentMeta }) {
   const paidLeads = leads.filter((l) => l.paid);
-  const stages = computeCostosPorEtapa(paidLeads, investmentTotal);
+  const stages = computeCostosPorEtapa(paidLeads, investmentMeta);
 
   return (
     <div>
       <div style={{ color: COLORS.muted, fontSize: 13, marginBottom: 14 }}>
-        Inversión total ({fmtMoney(investmentTotal)}) dividida entre los leads PAGADOS que llegaron a cada
-        etapa. Entre más adelante en el embudo, más caro se ve el costo — es normal, porque el mismo peso
-        invertido se reparte entre menos leads.
+        Inversión de prospección — Meta Ads + Google Search, sin YouTube — ({fmtMoney(investmentMeta)})
+        dividida entre los leads PAGADOS que llegaron a cada etapa. Entre más adelante en el embudo, más caro se ve el costo —
+        es normal, porque el mismo peso invertido se reparte entre menos leads.
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
@@ -2702,15 +2702,29 @@ export default function App() {
   const investmentTotal = useMemo(() => filteredInvestment.reduce((s, r) => s + r.cost, 0), [filteredInvestment]);
   const prevInvestmentTotal = useMemo(() => prevInvestment.reduce((s, r) => s + r.cost, 0), [prevInvestment]);
 
-  const monthlyAll = useMemo(() => buildPeriodTable(filteredLeads, filteredInvestment, "mes"), [filteredLeads, filteredInvestment]);
-  const monthlyPaid = useMemo(
-    () => buildPeriodTable(filteredLeads.filter((l) => l.paid), filteredInvestment, "mes"),
-    [filteredLeads, filteredInvestment]
+  // Criterio de "inversión de prospección" para el CPL (pagado y general) en
+  // TODO el dashboard: Meta Ads + Google Search. Se excluye ÚNICAMENTE
+  // Google YouTube, porque esas campañas son de awareness (generan
+  // suscriptores al canal, no leads) — meterlas infla el CPL artificialmente.
+  const isProspeccion = (r) => r.canal === "Meta" || (r.canal === "Google" && r.googleChannel !== "youtube");
+  const prevInvestmentMetaTotal = useMemo(
+    () => prevInvestment.filter(isProspeccion).reduce((s, r) => s + r.cost, 0),
+    [prevInvestment]
   );
-  const weeklyAll = useMemo(() => buildPeriodTable(filteredLeads, filteredInvestment, "semana"), [filteredLeads, filteredInvestment]);
+
+  const investmentMetaOnly = useMemo(() => filteredInvestment.filter(isProspeccion), [filteredInvestment]);
+  const investmentMetaOnlyFull = useMemo(() => investment.filter(isProspeccion), [investment]);
+  const investmentMetaTotal = useMemo(() => investmentMetaOnly.reduce((s, r) => s + r.cost, 0), [investmentMetaOnly]);
+
+  const monthlyAll = useMemo(() => buildPeriodTable(filteredLeads, investmentMetaOnly, "mes"), [filteredLeads, investmentMetaOnly]);
+  const monthlyPaid = useMemo(
+    () => buildPeriodTable(filteredLeads.filter((l) => l.paid), investmentMetaOnly, "mes"),
+    [filteredLeads, investmentMetaOnly]
+  );
+  const weeklyAll = useMemo(() => buildPeriodTable(filteredLeads, investmentMetaOnly, "semana"), [filteredLeads, investmentMetaOnly]);
   const weeklyPaid = useMemo(
-    () => buildPeriodTable(filteredLeads.filter((l) => l.paid), filteredInvestment, "semana"),
-    [filteredLeads, filteredInvestment]
+    () => buildPeriodTable(filteredLeads.filter((l) => l.paid), investmentMetaOnly, "semana"),
+    [filteredLeads, investmentMetaOnly]
   );
 
   // "Semana vs Semana" y "OPS 6 Semanas" necesitan mirar semanas COMPLETAS
@@ -2719,7 +2733,8 @@ export default function App() {
   // de los bordes y rompería la comparación. Por eso estas dos vistas usan
   // siempre el histórico completo (leads/investment sin acotar al filtro),
   // en vez de filteredLeads/filteredInvestment.
-  const weeklyAllFull = useMemo(() => buildPeriodTable(leads, investment, "semana"), [leads, investment]);
+  const weeklyAllFull = useMemo(() => buildPeriodTable(leads, investmentMetaOnlyFull, "semana"), [leads, investmentMetaOnlyFull]);
+
 
   // Vistas que alternan mes/semana según la granularidad automática.
   const periodAllAuto = granularityAuto === "mes" ? monthlyAll : weeklyAll;
@@ -2828,6 +2843,7 @@ export default function App() {
                   weeklyRows={weeklyAll}
                   prevLeads={prevLeads}
                   prevInvestmentTotal={prevInvestmentTotal}
+                  prevInvestmentMetaTotal={prevInvestmentMetaTotal}
                   hasPrevPeriod={!!prevRangeStart}
                   rangeStart={rangeStart}
                   rangeEnd={rangeEnd}
@@ -2857,7 +2873,7 @@ export default function App() {
               {tab === "ops6" && <OpsSeisSemanas weeklyAll={weeklyAllFull} leads={leads} />}
               {tab === "sf" && <SeguimientoFinal leads={filteredLeads} />}
               {tab === "utm" && <CampanasUtm leads={filteredLeads} />}
-              {tab === "costos" && <CostosPorEtapa leads={filteredLeads} investmentTotal={investmentTotal} />}
+              {tab === "costos" && <CostosPorEtapa leads={filteredLeads} investmentMeta={investmentMetaTotal} />}
               {tab === "velocidad" && <VelocidadPipeline leads={leads} />}
               {tab === "totalRockin" && (
                 <TotalVsRockin periodAll={periodAllAuto} periodPaid={periodPaidAuto} periodLabel={periodLabelAuto} />
