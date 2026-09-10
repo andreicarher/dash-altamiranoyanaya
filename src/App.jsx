@@ -2071,6 +2071,10 @@ function bucketMetaDaily(dailyRows, granularity) {
       key = `${d.getFullYear()}-${d.getMonth() + 1}`;
       label = `${MESES_LARGO[d.getMonth()]} ${d.getFullYear()}`;
       sortKey = d.getFullYear() * 100 + (d.getMonth() + 1);
+    } else if (granularity === "dia") {
+      key = r.date;
+      label = d.toLocaleDateString("es-MX", { day: "numeric", month: "short" });
+      sortKey = d.getTime();
     } else {
       const week = isoWeek(d);
       const year = d.getFullYear();
@@ -2085,6 +2089,16 @@ function bucketMetaDaily(dailyRows, granularity) {
   return Object.values(groups)
     .sort((a, b) => a.sortKey - b.sortKey)
     .map((g) => ({ ...g, cpl: g.resultado ? g.spend / g.resultado : null }));
+}
+
+// Esta gráfica en particular usa su propio criterio (distinto al del resto
+// del dashboard, que corta mes/semana a los 30 días): rangos de más de 30
+// días se ven por semana; 30 días o menos, por día — con pocos puntos,
+// verlo por semana se queda demasiado vacío.
+function computeChartGranularity(rangeStart, rangeEnd) {
+  if (!rangeStart || !rangeEnd) return "semana";
+  const days = Math.round((rangeEnd - rangeStart) / 86400000) + 1;
+  return days > 30 ? "semana" : "dia";
 }
 
 function StatusPill({ label, kind }) {
@@ -2207,7 +2221,8 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
   }
 
   const totalInversion = rows.reduce((s, r) => s + r.spend, 0);
-  const trendData = bucketMetaDaily(dailyRows, granularity);
+  const chartGranularity = computeChartGranularity(rangeStart, rangeEnd);
+  const trendData = bucketMetaDaily(dailyRows, chartGranularity);
   const totalResultados = rows.reduce((s, r) => s + r.resultado, 0);
   const costoPromedio = totalResultados ? totalInversion / totalResultados : null;
   const totalClicks = rows.reduce((s, r) => s + (r.clicks || 0), 0);
@@ -2314,7 +2329,7 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
 
       {trendData.length > 0 && (
         <Card style={{ marginBottom: 20 }}>
-          <SectionLabel>Inversión, Leads y Costo por Lead — por {granularity === "mes" ? "mes" : "semana"}</SectionLabel>
+          <SectionLabel>Inversión, Leads y Costo por Lead — por {chartGranularity === "dia" ? "día" : "semana"}</SectionLabel>
           <div style={{ height: 300 }}>
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart data={trendData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
