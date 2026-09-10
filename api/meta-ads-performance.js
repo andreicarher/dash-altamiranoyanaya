@@ -146,10 +146,33 @@ export default async function handler(req, res) {
 
     rows.sort((a, b) => b.spend - a.spend);
 
+    // 3) Serie DIARIA a nivel cuenta (no por anuncio) — para la gráfica de
+    //    tendencia de Inversión/Leads/Costo por lead. Se agrupa a
+    //    semana/mes en el frontend, con el mismo criterio (lunes-domingo)
+    //    que el resto del dashboard, en vez de usar el time_increment de
+    //    Meta (que por default corta semanas domingo-sábado).
+    const dailyFields = ["spend", "actions"].join(",");
+    const dailyUrl =
+      `https://graph.facebook.com/${API_VERSION}/act_${adAccountId}/insights` +
+      `?level=account&fields=${dailyFields}&time_increment=1&time_range=${timeRange}&limit=500&access_token=${token}`;
+    const dailyRawRows = await fetchAllPages(dailyUrl);
+    const dailyRows = dailyRawRows.map((r) => {
+      const actions = r.actions || [];
+      let resultado = 0;
+      for (const t of RESULT_ACTION_TYPES) {
+        const found = actions.find((a) => a.action_type === t);
+        if (found) {
+          resultado = parseFloat(found.value) || 0;
+          break;
+        }
+      }
+      return { date: r.date_start, spend: parseFloat(r.spend || 0), resultado };
+    });
+
     // Cache de 5 minutos en el edge de Vercel — evita pegarle a la API de
     // Meta en cada refresh si varias personas ven el dashboard al mismo tiempo.
     res.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=600");
-    res.status(200).json({ rows, dateFrom: date_from, dateTo: date_to });
+    res.status(200).json({ rows, dailyRows, dateFrom: date_from, dateTo: date_to });
   } catch (err) {
     res.status(500).json({ error: err.message || String(err) });
   }
