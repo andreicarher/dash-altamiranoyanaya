@@ -2365,7 +2365,16 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar yAxisId="money" dataKey="spend" name="Inversión" fill={COLORS.navy} radius={[4, 4, 0, 0]} />
                 <Line yAxisId="count" type="monotone" dataKey="resultado" name="Leads" stroke={COLORS.crimson} strokeWidth={2} dot={{ r: 3 }} />
-                <Line yAxisId="money" type="monotone" dataKey="cpl" name="Costo por Lead" stroke={COLORS.blue} strokeWidth={2} dot={{ r: 3 }} />
+                <Line
+                  yAxisId="money"
+                  type="monotone"
+                  dataKey="cpl"
+                  name="Costo por Lead"
+                  stroke={COLORS.yellow}
+                  strokeWidth={3}
+                  dot={{ r: 4, fill: COLORS.yellow, stroke: "#FFFFFF", strokeWidth: 1.5 }}
+                  activeDot={{ r: 6 }}
+                />
               </ComposedChart>
             </ResponsiveContainer>
           </div>
