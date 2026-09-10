@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Papa from "papaparse";
 import {
-  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer,
+  LineChart, Line, BarChart, Bar, ComposedChart, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip,
+  Legend, ResponsiveContainer,
 } from "recharts";
 
 /* =========================================================================
@@ -2056,6 +2056,37 @@ function TotalVsRockin({ periodAll, periodPaid, periodLabel }) {
    VISTA 10: META ADS — DESEMPEÑO EN VIVO (vía función serverless)
    ------------------------------------------------------------------------- */
 
+// Agrupa la serie diaria de Meta (spend + resultado por día) a semana o mes,
+// con el mismo criterio lunes-domingo (isoWeek) que usa el resto del
+// dashboard — en vez del time_increment de Meta, que corta semanas
+// domingo-sábado y no cuadraría con las demás vistas.
+function bucketMetaDaily(dailyRows, granularity) {
+  const groups = {};
+  for (const r of dailyRows) {
+    if (!r.date) continue;
+    const d = new Date(r.date + "T00:00:00");
+    if (isNaN(d.getTime())) continue;
+    let key, label, sortKey;
+    if (granularity === "mes") {
+      key = `${d.getFullYear()}-${d.getMonth() + 1}`;
+      label = `${MESES_LARGO[d.getMonth()]} ${d.getFullYear()}`;
+      sortKey = d.getFullYear() * 100 + (d.getMonth() + 1);
+    } else {
+      const week = isoWeek(d);
+      const year = d.getFullYear();
+      key = `${year}-${week}`;
+      label = `Sem ${week} ${year}`;
+      sortKey = year * 100 + week;
+    }
+    if (!groups[key]) groups[key] = { key, label, sortKey, spend: 0, resultado: 0 };
+    groups[key].spend += r.spend;
+    groups[key].resultado += r.resultado;
+  }
+  return Object.values(groups)
+    .sort((a, b) => a.sortKey - b.sortKey)
+    .map((g) => ({ ...g, cpl: g.resultado ? g.spend / g.resultado : null }));
+}
+
 function StatusPill({ label, kind }) {
   const map = {
     active: { bg: "#E7F5EC", fg: "#116B33" },
@@ -2113,10 +2144,11 @@ function countZohoMatches(leads, needle, field) {
   return { leads: leadsCount, miniCod, cod, seguimientoFinal, cierres };
 }
 
-function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd, leads, prevLeads }) {
+function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd, leads, prevLeads, granularity }) {
   const [status, setStatus] = useState("loading");
   const [errorMsg, setErrorMsg] = useState("");
   const [rows, setRows] = useState([]);
+  const [dailyRows, setDailyRows] = useState([]);
   const [prevRows, setPrevRows] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
   const [campaignFilter, setCampaignFilter] = useState("all");
@@ -2129,18 +2161,19 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
       const res = await fetch(url);
       const json = await res.json();
       if (!res.ok || json.error) throw new Error(json.error || `HTTP ${res.status}`);
-      return json.rows || [];
+      return json;
     }
     async function load() {
       setStatus("loading");
       try {
-        const [currentRows, previousRows] = await Promise.all([
+        const [current, previous] = await Promise.all([
           fetchRange(rangeStart, rangeEnd),
           prevRangeStart ? fetchRange(prevRangeStart, prevRangeEnd) : Promise.resolve(null),
         ]);
         if (cancelled) return;
-        setRows(currentRows);
-        setPrevRows(previousRows);
+        setRows(current.rows || []);
+        setDailyRows(current.dailyRows || []);
+        setPrevRows(previous ? previous.rows || [] : null);
         setStatus("ready");
       } catch (err) {
         if (cancelled) return;
@@ -2174,6 +2207,7 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
   }
 
   const totalInversion = rows.reduce((s, r) => s + r.spend, 0);
+  const trendData = bucketMetaDaily(dailyRows, granularity);
   const totalResultados = rows.reduce((s, r) => s + r.resultado, 0);
   const costoPromedio = totalResultados ? totalInversion / totalResultados : null;
   const totalClicks = rows.reduce((s, r) => s + (r.clicks || 0), 0);
@@ -2277,6 +2311,55 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
           delta={<KpiDelta current={ctrPromedio} previous={prevCtr} fmtAbs={(v) => `${v.toFixed(2)}%`} />}
         />
       </div>
+
+      {trendData.length > 0 && (
+        <Card style={{ marginBottom: 20 }}>
+          <SectionLabel>Inversión, Leads y Costo por Lead — por {granularity === "mes" ? "mes" : "semana"}</SectionLabel>
+          <div style={{ height: 300 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={trendData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" />
+                <XAxis dataKey="label" type="category" stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+                <YAxis yAxisId="money" stroke={COLORS.muted} tick={{ fontSize: 11 }} tickFormatter={(v) => fmtMoney(v)} />
+                <YAxis yAxisId="count" orientation="right" stroke={COLORS.muted} tick={{ fontSize: 11 }} />
+                <Tooltip
+                  content={({ active, payload, label }) => {
+                    if (!active || !payload || !payload.length) return null;
+                    return (
+                      <div
+                        style={{
+                          background: "#FFFFFF",
+                          border: `1px solid ${COLORS.border}`,
+                          borderRadius: 8,
+                          padding: "8px 12px",
+                          fontSize: 12,
+                          boxShadow: "0 2px 8px rgba(33,29,29,0.12)",
+                        }}
+                      >
+                        <div style={{ fontWeight: 700, marginBottom: 4, color: COLORS.text }}>{label}</div>
+                        {payload.map((p, i) => (
+                          <div key={i} style={{ color: p.color }}>
+                            {p.name}:{" "}
+                            <strong>{p.name === "Leads" ? p.value.toLocaleString("es-MX") : fmtMoney(p.value)}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  }}
+                />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Bar yAxisId="money" dataKey="spend" name="Inversión" fill={COLORS.navy} radius={[4, 4, 0, 0]} />
+                <Line yAxisId="count" type="monotone" dataKey="resultado" name="Leads" stroke={COLORS.crimson} strokeWidth={2} dot={{ r: 3 }} />
+                <Line yAxisId="money" type="monotone" dataKey="cpl" name="Costo por Lead" stroke={COLORS.blue} strokeWidth={2} dot={{ r: 3 }} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+          <div style={{ fontSize: 11.5, color: COLORS.muted, marginTop: 6 }}>
+            Inversión y Costo por Lead comparten el eje izquierdo (ambos en pesos); Leads usa el eje derecho
+            (conteo). Se agrupa automáticamente según la misma granularidad del filtro de fecha de arriba.
+          </div>
+        </Card>
+      )}
 
       <Card style={{ marginBottom: 20 }}>
         <SectionLabel>Filtrar tabla de anuncios</SectionLabel>
@@ -3096,6 +3179,7 @@ export default function App() {
                   prevRangeEnd={prevRangeEnd}
                   leads={filteredLeads}
                   prevLeads={prevLeads}
+                  granularity={granularityAuto}
                 />
               )}
               {tab === "pipelineMensual" && <PipelineMensualFase leads={filteredLeads} periodKey={granularityAuto} />}
