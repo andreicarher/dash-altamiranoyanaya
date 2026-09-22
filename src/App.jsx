@@ -807,7 +807,7 @@ function SourceNote({ children }) {
 }
 const SOURCE_ZOHO = "Base ZOHO OPS 2026";
 const SOURCE_ADS = "Query-Meta + Query-Google";
-const SOURCE_BOTH = "Base ZOHO OPS 2026 + Query-Meta + Query-Google";
+const SOURCE_BOTH = "Base ZOHO OPS 2026 + Meta Ads (API en vivo) + Query-Google";
 
 // Etiqueta pequeña estilo "eyebrow" para encabezar cada sección de una vista.
 function SectionLabel({ children }) {
@@ -2534,7 +2534,7 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
           return i === 0 && r.leadsZoho > 0 ? { background: "#E7F5EC" } : {};
         }}
       />
-      <SourceNote>Query-Meta (o API en vivo) + Base ZOHO OPS 2026, cruzados por texto (utm_campaign)</SourceNote>
+      <SourceNote>Meta Marketing API (en vivo) + Base ZOHO OPS 2026, cruzados por texto (utm_campaign)</SourceNote>
 
       <div style={{ marginTop: 32, marginBottom: 10 }}>
         <SectionLabel>Mejores Anuncios — cruce con pipeline de ZOHO</SectionLabel>
@@ -2608,7 +2608,7 @@ function MetaAdsPerformance({ rangeStart, rangeEnd, prevRangeStart, prevRangeEnd
           return i === 0 && r.leadsZoho > 0 ? { background: "#FBE7EB" } : {};
         }}
       />
-      <SourceNote>Query-Meta (o API en vivo) + Base ZOHO OPS 2026, cruzados por texto (utm_content)</SourceNote>
+      <SourceNote>Meta Marketing API (en vivo) + Base ZOHO OPS 2026, cruzados por texto (utm_content)</SourceNote>
       <div style={{ fontSize: 11.5, color: COLORS.muted, marginTop: 6 }}>
         Los deltas (▲▼) en Leads ZOHO y CPL real comparan contra el mismo adset/anuncio en el período
         anterior equivalente. Si un adset o anuncio es nuevo (no corrió en el período anterior), no muestra
@@ -2915,6 +2915,8 @@ export default function App() {
   const [leads, setLeads] = useState([]);
   const [investment, setInvestment] = useState([]);
   const [tab, setTab] = useState("resumen");
+  // "api" = Meta en vivo (lo normal); "sheet" = respaldo si la API falló.
+  const [metaSource, setMetaSource] = useState(null);
 
   const [datePreset, setDatePreset] = useState("all");
   const [customStart, setCustomStart] = useState("");
@@ -2922,6 +2924,33 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+
+    // Meta ahora se lee EN VIVO de la API de Meta (no del Sheet) — así el
+    // dashboard nunca vuelve a mostrar un número bajo por un hueco de
+    // sincronización de Supermetrics como el que encontramos el 22-sep.
+    // Si la API llegara a fallar (token vencido, límite de la cuenta, etc.),
+    // cae automáticamente a Query-Meta del Sheet como respaldo, para que el
+    // dashboard nunca se quede sin datos de inversión de Meta.
+    async function fetchMetaLive() {
+      const desde = `${VALID_YEAR}-01-01`;
+      const hasta = toInputDate(new Date());
+      const res = await fetch(`/api/meta-ads-performance?date_from=${desde}&date_to=${hasta}`);
+      const json = await res.json();
+      if (!res.ok || json.error || !json.dailyRows) throw new Error(json.error || `HTTP ${res.status}`);
+      return json.dailyRows.map((r) => {
+        const d = new Date(r.date + "T00:00:00");
+        return {
+          year: d.getFullYear(),
+          month: d.getMonth() + 1,
+          week: isoWeek(d),
+          date: d,
+          cost: r.spend,
+          websiteLeads: r.resultado,
+          canal: "Meta",
+        };
+      });
+    }
+
     async function load() {
       try {
         const [metaRows, googleRows, zohoRows] = await Promise.all([
@@ -2933,11 +2962,23 @@ export default function App() {
         assertColumns(metaRows, ["Year", "Month", "Date", "Total Cost", "Website leads"], TABS_SOURCE.meta);
         assertColumns(googleRows, ["Date", "Month", "Cost", "Conversions", "Campaign"], TABS_SOURCE.google);
         assertColumns(zohoRows, ["ID de registro", "Fase", "Fuente de Sospechoso", "Hora de creación (Sospechosos convertidos)"], TABS_SOURCE.zoho);
-        const meta = processMetaInvestment(metaRows);
+
+        let meta;
+        let source;
+        try {
+          meta = await fetchMetaLive();
+          source = "api";
+        } catch (metaErr) {
+          meta = processMetaInvestment(metaRows);
+          source = "sheet";
+        }
+        if (cancelled) return;
+
         const google = processGoogleInvestment(googleRows);
         const zoho = processZohoLeads(zohoRows);
         setInvestment([...meta, ...google]);
         setLeads(zoho);
+        setMetaSource(source);
         setStatus("ready");
       } catch (err) {
         if (cancelled) return;
@@ -3118,9 +3159,27 @@ export default function App() {
               </h1>
             </div>
           )}
-          <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 22 }}>
-            Datos en vivo desde Google Sheets · Query-Meta · Query-Google · Base ZOHO OPS 2026
+          <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 8 }}>
+            Meta Ads: API en vivo{metaSource === "sheet" ? " (respaldo: Query-Meta)" : ""} · Google Ads: Query-Google
+            · ZOHO: Base ZOHO OPS 2026
           </div>
+          {status === "ready" && metaSource === "sheet" && (
+            <div
+              style={{
+                background: "#FEF6E7",
+                border: `1px solid ${COLORS.yellow}`,
+                borderRadius: 10,
+                padding: "10px 14px",
+                marginBottom: 18,
+                color: "#8A5A07",
+                fontSize: 12.5,
+              }}
+            >
+              ⚠️ No se pudo conectar con la API de Meta en este momento — la inversión de Meta se está
+              mostrando desde el Sheet (Query-Meta) como respaldo, que puede estar desactualizado unos días.
+              Si esto persiste, revisa que META_ACCESS_TOKEN siga vigente en Vercel.
+            </div>
+          )}
 
           {status === "loading" && (
             <div style={{ padding: 60, textAlign: "center", color: COLORS.muted }}>
